@@ -31,15 +31,16 @@ using MaxResultsMap = std::unordered_map<long long, std::unordered_map<std::stri
 
 // Вспомогательная функция для вывода ошибок SQLite
 void log_sqlite_error(const std::string& message, sqlite3* db_handle) {
-    std::cerr << "  ❌ " << message << ": " << sqlite3_errmsg(db_handle) << std::endl;
+    std::cerr << "  ERROR: " << message << ": " << sqlite3_errmsg(db_handle) << std::endl;
 }
 
 void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
-    std::cout << "\n🔄 Обрабатывается файл: " << db_path.filename().string() << std::endl;
+    std::cout << "\nProcessing file: " << db_path.filename().string() << std::endl;
     sqlite3* db_handle;
 
+    // Используем конструктор пути, который корректно работает с UTF-8 на Windows
     if (sqlite3_open_v2(db_path.string().c_str(), &db_handle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-        log_sqlite_error("Ошибка открытия файла", db_handle);
+        log_sqlite_error("Could not open file", db_handle);
         sqlite3_close(db_handle);
         return;
     }
@@ -48,7 +49,7 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
     sqlite3_stmt* table_stmt;
     const char* table_query = "SELECT name FROM sqlite_master WHERE type='table';";
     if (sqlite3_prepare_v2(db_handle, table_query, -1, &table_stmt, nullptr) != SQLITE_OK) {
-        log_sqlite_error("Ошибка получения списка таблиц", db_handle);
+        log_sqlite_error("Failed to fetch table list", db_handle);
         sqlite3_close(db_handle);
         return;
     }
@@ -61,13 +62,13 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
 
     // 2. Обрабатываем каждую таблицу
     for (const auto& table_name : table_names) {
-        std::cout << "  - Чтение таблицы: '" << table_name << "'" << std::endl;
+        std::cout << "  - Reading table: '" << table_name << "'" << std::endl;
         
         std::string query = "SELECT * FROM \"" + table_name + "\";";
         sqlite3_stmt* stmt;
 
         if (sqlite3_prepare_v2(db_handle, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-            log_sqlite_error("Ошибка подготовки запроса", db_handle);
+            log_sqlite_error("Failed to prepare query", db_handle);
             continue;
         }
 
@@ -83,7 +84,7 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
         }
 
         if (elemId_idx == -1 || setN_idx == -1) {
-            std::cout << "    ⚠️ Пропуск: в таблице нет столбцов '" << ELEMENT_ID_COLUMN << "' или '" << SET_N_COLUMN << "'." << std::endl;
+            std::cout << "    WARNING: Skipping table. Missing '" << ELEMENT_ID_COLUMN << "' or '" << SET_N_COLUMN << "' columns." << std::endl;
             sqlite3_finalize(stmt);
             continue;
         }
@@ -108,7 +109,7 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
 }
 
 void saveResults(const MaxResultsMap& results) {
-    std::cout << "\n✍️ Запись результатов..." << std::endl;
+    std::cout << "\nWriting results..." << std::endl;
     
     // --- Сохранение в CSV ---
     std::ofstream csv_file(OUTPUT_CSV_FILENAME);
@@ -117,7 +118,7 @@ void saveResults(const MaxResultsMap& results) {
     // --- Сохранение в DB через C API ---
     sqlite3* db_handle;
     if (sqlite3_open(OUTPUT_DB_FILENAME.c_str(), &db_handle) != SQLITE_OK) {
-        log_sqlite_error("Ошибка создания итоговой БД", db_handle);
+        log_sqlite_error("Could not create output database", db_handle);
         sqlite3_close(db_handle);
         return;
     }
@@ -143,7 +144,6 @@ void saveResults(const MaxResultsMap& results) {
 
             csv_file << element_id << ";" << reinf_type << ";" << info.value << ";" << info.source_db << ";" << info.source_table << ";" << info.source_setN << "\n";
             
-            // Привязываем значения к запросу
             sqlite3_bind_int64(insert_stmt, 1, element_id);
             sqlite3_bind_text(insert_stmt, 2, reinf_type.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_double(insert_stmt, 3, info.value);
@@ -151,9 +151,9 @@ void saveResults(const MaxResultsMap& results) {
             sqlite3_bind_text(insert_stmt, 5, info.source_table.c_str(), -1, SQLITE_STATIC);
             sqlite3_bind_int64(insert_stmt, 6, info.source_setN);
 
-            sqlite3_step(insert_stmt);      // Выполняем запрос
-            sqlite3_clear_bindings(insert_stmt); // Очищаем привязки
-            sqlite3_reset(insert_stmt);     // Сбрасываем запрос для следующей итерации
+            sqlite3_step(insert_stmt);
+            sqlite3_clear_bindings(insert_stmt);
+            sqlite3_reset(insert_stmt);
         }
     }
 
@@ -162,20 +162,43 @@ void saveResults(const MaxResultsMap& results) {
     if (err_msg) sqlite3_free(err_msg);
     sqlite3_close(db_handle);
 
-    std::cout << "✅ Результаты успешно сохранены в " << OUTPUT_CSV_FILENAME << " и " << OUTPUT_DB_FILENAME << std::endl;
+    std::cout << "OK: Results successfully saved to " << OUTPUT_CSV_FILENAME << " and " << OUTPUT_DB_FILENAME << std::endl;
 }
 
 int main() {
     #ifdef _WIN32
+        // Эта команда настраивает консоль на работу с UTF-8,
+        // что необходимо для корректного отображения и ввода русских символов в пути.
         std::system("chcp 65001 > nul");
     #endif
     
-    std::cout << "--- Запуск анализатора огибающей армирования (Pure C API) ---" << std::endl;
+    std::cout << "--- Reinforcement Envelope Analyzer (Pure C API) ---" << std::endl;
+
+    std::string input_path_str;
+    std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
+    std::getline(std::cin, input_path_str);
+
+    if (input_path_str.empty() || input_path_str == ".") {
+        input_path_str = ".";
+    }
+
+    fs::path target_path;
+    try {
+        // std::filesystem::path хорошо работает с UTF-8 строками,
+        // которые мы получаем из консоли после chcp 65001.
+        target_path = input_path_str;
+        if (!fs::exists(target_path) || !fs::is_directory(target_path)) {
+            std::cerr << "ERROR: Path does not exist or is not a directory: " << input_path_str << std::endl;
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Invalid path. " << e.what() << std::endl;
+        return 1;
+    }
     
     MaxResultsMap all_max_results;
-    const fs::path current_path(".");
 
-    for (const auto& entry : fs::directory_iterator(current_path)) {
+    for (const auto& entry : fs::directory_iterator(target_path)) {
         if (entry.is_regular_file() && entry.path().extension() == ".db") {
             if (entry.path().filename().string() != OUTPUT_DB_FILENAME) {
                 processDatabase(entry.path(), all_max_results);
@@ -184,12 +207,12 @@ int main() {
     }
 
     if (all_max_results.empty()) {
-        std::cout << "\n❌ Не удалось собрать данные. Проверьте .db файлы в папке." << std::endl;
+        std::cout << "\nERROR: No data was collected. Check .db files in the specified directory." << std::endl;
     } else {
         saveResults(all_max_results);
     }
 
-    std::cout << "\n🎉 Анализ завершен!" << std::endl;
+    std::cout << "\nAnalysis complete!" << std::endl;
     return 0;
 }
 
