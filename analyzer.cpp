@@ -6,12 +6,10 @@
 #include <fstream>
 #include <algorithm>
 
-// Подключаем заголовок для Windows API
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-// Подключаем ТОЛЬКО базовую библиотеку SQLite
 #include "sqlite3.h"
 
 namespace fs = std::filesystem;
@@ -40,12 +38,19 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
     std::cout << "\nProcessing file: " << db_path.filename().string() << std::endl;
     sqlite3* db_handle;
 
-    // ИСПОЛЬЗУЕМ sqlite3_open16 для корректной работы с Unicode-путями в Windows
-    if (sqlite3_open16(db_path.c_str(), &db_handle) != SQLITE_OK) {
-        log_sqlite_error("Could not open file", db_handle);
-        sqlite3_close(db_handle);
-        return;
-    }
+    #ifdef _WIN32
+        if (sqlite3_open16(db_path.c_str(), &db_handle) != SQLITE_OK) {
+            log_sqlite_error("Could not open file", db_handle);
+            sqlite3_close(db_handle);
+            return;
+        }
+    #else
+        if (sqlite3_open(db_path.string().c_str(), &db_handle) != SQLITE_OK) {
+            log_sqlite_error("Could not open file", db_handle);
+            sqlite3_close(db_handle);
+            return;
+        }
+    #endif
 
     sqlite3_stmt* table_stmt;
     const char* table_query = "SELECT name FROM sqlite_master WHERE type='table';";
@@ -163,42 +168,28 @@ void saveResults(const MaxResultsMap& results) {
     std::cout << "OK: Results successfully saved to " << OUTPUT_CSV_FILENAME << " and " << OUTPUT_DB_FILENAME << std::endl;
 }
 
-int main() {
+// Используем wmain для корректного приема Unicode-аргументов в Windows
+int wmain(int argc, wchar_t* argv[]) {
     #ifdef _WIN32
-        // Настраиваем консоль на корректную работу с Unicode (UTF-16)
         SetConsoleOutputCP(CP_UTF8);
-        SetConsoleCP(CP_UTF8);
     #endif
     
     std::cout << "--- Reinforcement Envelope Analyzer (Pure C API) ---" << std::endl;
-    std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
 
     fs::path target_path;
-    
-    #ifdef _WIN32
-        // Используем wcin для чтения Unicode-строки в Windows
-        std::wstring wpath_str;
-        std::getline(std::wcin, wpath_str);
-        if (wpath_str.empty() || wpath_str == L".") {
-            target_path = ".";
-        } else {
-            target_path = wpath_str;
-        }
-    #else
-        // Стандартный метод для других ОС
-        std::string path_str;
-        std::getline(std::cin, path_str);
-        if (path_str.empty() || path_str == ".") {
-            target_path = ".";
-        } else {
-            target_path = path_str;
-        }
-    #endif
+
+    if (argc < 2) {
+        std::cout << "No path provided. Using current directory." << std::endl;
+        target_path = ".";
+    } else {
+        // argv[1] содержит путь, переданный программе
+        target_path = argv[1];
+        std::wcout << L"Target directory: " << target_path.wstring() << std::endl;
+    }
 
     try {
         if (!fs::exists(target_path) || !fs::is_directory(target_path)) {
-            // Используем u8string() для корректного вывода пути в консоль
-            std::cerr << "ERROR: Path does not exist or is not a directory: " << target_path.u8string() << std::endl;
+            std::cerr << "ERROR: Path does not exist or is not a directory: " << target_path.string() << std::endl;
             return 1;
         }
     } catch (const std::exception& e) {
