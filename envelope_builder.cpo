@@ -1,0 +1,370 @@
+#include "EnvelopeBuilder.h"
+#include <iostream>
+#include <fstream>
+#include <algorithm>
+#include <stdexcept>
+
+// --- РЕАЛИЗАЦИЯ МЕТОДОВ КЛАССА ---
+
+EnvelopeBuilder::EnvelopeBuilder() {}
+
+void EnvelopeBuilder::Run()
+{
+    std::cout << "--- Reinforcement Envelope Builder ---" << std::endl;
+
+    fs::path targetPath = GetTargetPathFromUser();
+    if (targetPath.empty()) return;
+
+    try
+    {
+        // Проход 1: Верификация данных. Этот шаг общий для обоих режимов.
+        if (!CollectAndVerifyElements(targetPath))
+        {
+            return; // Ошибка уже была выведена
+        }
+
+#ifdef MEMORY_OPTIMIZED
+        // Проход 2 (Режим On-Disk): Огибание с записью на диск
+        EnvelopeReinforcementOnDisk(targetPath);
+#else
+        // Проход 2 (Режим In-Memory): Огибание с записью в RAM
+        EnvelopeReinforcementInMemory(targetPath);
+#endif
+
+        // Проход 3: Сборка итоговой базы данных из результатов
+        AssembleFinalDatabase(targetPath);
+
+        std::cout << "\nAnalysis and build complete!" << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "\nCRITICAL ERROR: " << e.what() << std::endl;
+    }
+}
+
+bool EnvelopeBuilder::CollectAndVerifyElements(const fs::path& targetPath)
+{
+    std::cout << "\nPASS 1: Verifying 'Elements' tables..." << std::endl;
+
+    for (const auto& entry : fs::directory_iterator(targetPath))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".db") continue;
+
+        sqlite3* dbHandle;
+        if (sqlite3_open_v2(entry.path().string().c_str(), &dbHandle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        {
+            LogSqliteError("Could not open file " + entry.path().filename().string(), dbHandle);
+            sqlite3_close(dbHandle);
+            continue;
+        }
+
+        std::cout << "  - Checking file: " << entry.path().filename().string() << std::endl;
+
+        std::string query = "SELECT * FROM \"" + config_.ELEMENTS_TABLE_NAME + "\";";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(dbHandle, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+        {
+            sqlite3_close(dbHandle);
+            continue;
+        }
+
+        int colCount = sqlite3_column_count(stmt);
+        int elemIdIdx = -1;
+        std::vector<std::string> colNames;
+        for (int i = 0; i < colCount; ++i)
+        {
+            std::string colName = sqlite3_column_name(stmt, i);
+            if (colName == config_.ELEMENT_ID_COLUMN) elemIdIdx = i;
+            colNames.push_back(colName);
+        }
+
+        if (elemIdIdx == -1)
+        {
+            sqlite3_finalize(stmt);
+            sqlite3_close(dbHandle);
+            continue;
+        }
+
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            long long currentElemId = sqlite3_column_int64(stmt, elemIdIdx);
+            ElementProperties currentProps;
+            for (int i = 0; i < colCount; ++i)
+            {
+                if (i == elemIdIdx) continue;
+                const char* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, i));
+                currentProps[colNames[i]] = value ? value : "";
+            }
+
+            if (verifiedElements_.count(currentElemId))
+            {
+                const ElementProperties& existingProps = verifiedElements_.at(currentElemId);
+                if (currentProps != existingProps)
+                {
+                    std::string errorMsg = "Data mismatch for elemId " + std::to_string(currentElemId) +
+                                           " in file '" + entry.path().filename().string() + "'.";
+                    throw std::runtime_error(errorMsg);
+                }
+            }
+            else
+            {
+                verifiedElements_[currentElemId] = currentProps;
+            }
+        }
+        sqlite3_finalize(stmt);
+        sqlite3_close(dbHandle);
+    }
+    std::cout << "Verification successful. Found " << verifiedElements_.size() << " unique elements." << std::endl;
+    return true;
+}
+
+#ifdef MEMORY_OPTIMIZED
+// =================================================================
+//    РЕАЛИЗАЦИЯ ДЛЯ РЕЖИМА С НИЗКОЙ ПАМЯТЬЮ (НА ДИСКЕ)
+// =================================================================
+void EnvelopeBuilder::EnvelopeReinforcementOnDisk(const fs::path& targetPath)
+{
+    std::cout << "\nPASS 2: Enveloping reinforcement data (On-Disk mode)..." << std::endl;
+    
+    fs::path tempDbPath = targetPath / config_.TEMP_DB_FILENAME;
+    if (fs::exists(tempDbPath)) fs::remove(tempDbPath);
+    
+    sqlite3* tempDbHandle;
+    if (sqlite3_open(tempDbPath.string().c_str(), &tempDbHandle) != SQLITE_OK)
+    {
+        throw std::runtime_error("Could not create temporary database.");
+    }
+    
+    const char* createTempTableSql = R"(
+        CREATE TABLE EnvelopedReinforcement (
+            Element_ID INTEGER, Reinforcement_Type TEXT, Max_Value REAL,
+            PRIMARY KEY (Element_ID, Reinforcement_Type)
+        );
+    )";
+    char* errMsg = nullptr;
+    sqlite3_exec(tempDbHandle, createTempTableSql, 0, 0, &errMsg);
+    sqlite3_exec(tempDbHandle, "BEGIN TRANSACTION;", 0, 0, &errMsg);
+
+    for (const auto& entry : fs::directory_iterator(targetPath))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".db") continue;
+        
+        std::cout << "  - Processing file: " << entry.path().filename().string() << std::endl;
+        
+        sqlite3* sourceDbHandle;
+        if (sqlite3_open_v2(entry.path().string().c_str(), &sourceDbHandle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) continue;
+
+        const char* upsertSql = R"(
+            INSERT INTO EnvelopedReinforcement VALUES (?, ?, ?)
+            ON CONFLICT(Element_ID, Reinforcement_Type) DO UPDATE SET Max_Value = excluded.Max_Value
+            WHERE excluded.Max_Value > Max_Value;
+        )";
+        sqlite3_stmt* upsertStmt;
+        sqlite3_prepare_v2(tempDbHandle, upsertSql, -1, &upsertStmt, nullptr);
+
+        for (const auto& tableName : GetTableNames(sourceDbHandle))
+        {
+            if (tableName == config_.ELEMENTS_TABLE_NAME) continue;
+
+            std::string query = "SELECT * FROM \"" + tableName + "\";";
+            sqlite3_stmt* selectStmt;
+            if (sqlite3_prepare_v2(sourceDbHandle, query.c_str(), -1, &selectStmt, nullptr) != SQLITE_OK) continue;
+
+            int colCount = sqlite3_column_count(selectStmt);
+            int elemIdIdx = -1;
+            std::vector<std::pair<std::string, int>> reinfCols;
+            for (int i = 0; i < colCount; ++i) {
+                std::string colName = sqlite3_column_name(selectStmt, i);
+                if (colName == config_.ELEMENT_ID_COLUMN) elemIdIdx = i;
+                else if (colName.rfind("As", 0) == 0) reinfCols.push_back({colName, i});
+            }
+
+            if (elemIdIdx != -1) {
+                while (sqlite3_step(selectStmt) == SQLITE_ROW) {
+                    long long elementId = sqlite3_column_int64(selectStmt, elemIdIdx);
+                    for (const auto& reinfCol : reinfCols) {
+                        sqlite3_bind_int64(upsertStmt, 1, elementId);
+                        sqlite3_bind_text(upsertStmt, 2, reinfCol.first.c_str(), -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_double(upsertStmt, 3, sqlite3_column_double(selectStmt, reinfCol.second));
+                        sqlite3_step(upsertStmt);
+                        sqlite3_reset(upsertStmt);
+                    }
+                }
+            }
+            sqlite3_finalize(selectStmt);
+        }
+        sqlite3_finalize(upsertStmt);
+        sqlite3_close(sourceDbHandle);
+    }
+    
+    sqlite3_exec(tempDbHandle, "COMMIT;", 0, 0, &errMsg);
+    sqlite3_close(tempDbHandle);
+}
+
+#else
+// =================================================================
+//      РЕАЛИЗАЦИЯ ДЛЯ РЕЖИМА В ОПЕРАТИВНОЙ ПАМЯТИ (БЫСТРЫЙ)
+// =================================================================
+void EnvelopeBuilder::EnvelopeReinforcementInMemory(const fs::path& targetPath)
+{
+    std::cout << "\nPASS 2: Enveloping reinforcement data (In-Memory mode)..." << std::endl;
+
+    for (const auto& entry : fs::directory_iterator(targetPath))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".db") continue;
+
+        std::cout << "  - Processing file: " << entry.path().filename().string() << std::endl;
+
+        sqlite3* dbHandle;
+        if (sqlite3_open_v2(entry.path().string().c_str(), &dbHandle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        {
+            LogSqliteError("Could not open file", dbHandle);
+            sqlite3_close(dbHandle);
+            continue;
+        }
+
+        for (const auto& tableName : GetTableNames(dbHandle))
+        {
+            if (tableName == config_.ELEMENTS_TABLE_NAME) continue;
+
+            std::string query = "SELECT * FROM \"" + tableName + "\";";
+            sqlite3_stmt* stmt;
+            if (sqlite3_prepare_v2(dbHandle, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) continue;
+
+            int colCount = sqlite3_column_count(stmt);
+            int elemIdIdx = -1;
+            std::vector<std::pair<std::string, int>> reinfCols;
+            for (int i = 0; i < colCount; ++i) {
+                std::string colName = sqlite3_column_name(stmt, i);
+                if (colName == config_.ELEMENT_ID_COLUMN) elemIdIdx = i;
+                else if (colName.rfind("As", 0) == 0) reinfCols.push_back({colName, i});
+            }
+
+            if (elemIdIdx != -1) {
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    long long elementId = sqlite3_column_int64(stmt, elemIdIdx);
+                    for (const auto& reinfCol : reinfCols) {
+                        const std::string& colName = reinfCol.first;
+                        double currentValue = sqlite3_column_double(stmt, reinfCol.second);
+                        if (envelopedReinforcement_[elementId].find(colName) == envelopedReinforcement_[elementId].end() || currentValue > envelopedReinforcement_[elementId][colName].value) {
+                            envelopedReinforcement_[elementId][colName] = { currentValue };
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        sqlite3_close(dbHandle);
+    }
+}
+#endif
+
+// =================================================================
+//    ОБЩАЯ ЛОГИКА СБОРКИ ИТОГОВОЙ БАЗЫ
+// =================================================================
+void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath)
+{
+    std::cout << "\nPASS 3: Assembling final database '" << config_.OUTPUT_DB_FILENAME << "'..." << std::endl;
+
+    fs::path finalDbPath = targetPath / config_.OUTPUT_DB_FILENAME;
+    if (fs::exists(finalDbPath)) fs::remove(finalDbPath);
+
+    sqlite3* finalDbHandle;
+    if (sqlite3_open(finalDbPath.string().c_str(), &finalDbHandle) != SQLITE_OK) {
+        throw std::runtime_error("Could not create final database.");
+    }
+
+    char* errMsg = nullptr;
+    sqlite3_exec(finalDbHandle, "BEGIN TRANSACTION;", 0, 0, &errMsg);
+
+    // 1. Создаем и заполняем таблицу Elements
+    std::string createElementsTableSql = "CREATE TABLE " + config_.ELEMENTS_TABLE_NAME + " (ElementID INTEGER PRIMARY KEY";
+    std::vector<std::string> propNames;
+    if (!verifiedElements_.empty()) {
+        for (const auto& prop : verifiedElements_.begin()->second) {
+            createElementsTableSql += ", \"" + prop.first + "\" TEXT";
+            propNames.push_back(prop.first);
+        }
+    }
+    createElementsTableSql += ");";
+    sqlite3_exec(finalDbHandle, createElementsTableSql.c_str(), 0, 0, &errMsg);
+
+    std::string insertElementSql = "INSERT INTO " + config_.ELEMENTS_TABLE_NAME + " VALUES (?";
+    for (size_t i = 0; i < propNames.size(); ++i) insertElementSql += ",?";
+    insertElementSql += ");";
+    
+    sqlite3_stmt* insertElementStmt;
+    sqlite3_prepare_v2(finalDbHandle, insertElementSql.c_str(), -1, &insertElementStmt, nullptr);
+
+    for (const auto& pair : verifiedElements_) {
+        sqlite3_bind_int64(insertElementStmt, 1, pair.first);
+        for (size_t i = 0; i < propNames.size(); ++i) {
+            sqlite3_bind_text(insertElementStmt, i + 2, pair.second.at(propNames[i]).c_str(), -1, SQLITE_STATIC);
+        }
+        sqlite3_step(insertElementStmt);
+        sqlite3_reset(insertElementStmt);
+    }
+    sqlite3_finalize(insertElementStmt);
+
+    // 2. Создаем и заполняем таблицу EnvelopedReinforcement
+    const char* createReinforcementTableSql = R"(
+        CREATE TABLE EnvelopedReinforcement (
+            Element_ID INTEGER, Reinforcement_Type TEXT, Max_Value REAL,
+            FOREIGN KEY(Element_ID) REFERENCES Elements(ElementID)
+        );
+    )";
+    sqlite3_exec(finalDbHandle, createReinforcementTableSql, 0, 0, &errMsg);
+    
+    sqlite3_stmt* insertReinforcementStmt;
+    sqlite3_prepare_v2(finalDbHandle, "INSERT INTO EnvelopedReinforcement VALUES (?, ?, ?);", -1, &insertReinforcementStmt, nullptr);
+
+#ifdef MEMORY_OPTIMIZED
+    // Копируем из временной БД
+    fs::path tempDbPath = targetPath / config_.TEMP_DB_FILENAME;
+    std::string attachSql = "ATTACH DATABASE '" + tempDbPath.string() + "' AS temp_db;";
+    sqlite3_exec(finalDbHandle, attachSql.c_str(), 0, 0, &errMsg);
+    const char* copySql = "INSERT INTO EnvelopedReinforcement SELECT * FROM temp_db.EnvelopedReinforcement;";
+    sqlite3_exec(finalDbHandle, copySql, 0, 0, &errMsg);
+    sqlite3_exec(finalDbHandle, "DETACH DATABASE temp_db;", 0, 0, &errMsg);
+    if (fs::exists(tempDbPath)) fs::remove(tempDbPath);
+#else
+    // Вставляем из оперативной памяти
+    for (const auto& elemPair : envelopedReinforcement_) {
+        long long elementId = elemPair.first;
+        for (const auto& reinfPair : elemPair.second) {
+            sqlite3_bind_int64(insertReinforcementStmt, 1, elementId);
+            sqlite3_bind_text(insertReinforcementStmt, 2, reinfPair.first.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_double(insertReinforcementStmt, 3, reinfPair.second.value);
+            sqlite3_step(insertReinforcementStmt);
+            sqlite3_reset(insertReinforcementStmt);
+        }
+    }
+#endif
+    sqlite3_finalize(insertReinforcementStmt);
+    
+    sqlite3_exec(finalDbHandle, "COMMIT;", 0, 0, &errMsg);
+    
+    if(errMsg) {
+        LogSqliteError("Error during final assembly", finalDbHandle);
+        sqlite3_free(errMsg);
+    }
+
+    sqlite3_close(finalDbHandle);
+    
+    std::cout << "OK: Final database created successfully." << std::endl;
+}
+
+// Вспомогательные функции, которые не являются частью класса
+fs::path EnvelopeBuilder::GetTargetPathFromUser()
+{
+    std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
+    std::string inputPathStr;
+    std::getline(std::cin, inputPathStr);
+    fs::path targetPath = inputPathStr.empty() || inputPathStr == "." ? "." : inputPathStr;
+    if (!fs::exists(targetPath) || !fs::is_directory(targetPath)) {
+        std::cerr << "ERROR: Path does not exist or is not a directory: " << inputPathStr << std::endl;
+        return {};
+    }
+    return targetPath;
+}
+
