@@ -6,6 +6,11 @@
 #include <fstream>
 #include <algorithm>
 
+// Подключаем заголовок для Windows API
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // Подключаем ТОЛЬКО базовую библиотеку SQLite
 #include "sqlite3.h"
 
@@ -18,7 +23,6 @@ const std::string OUTPUT_CSV_FILENAME = "Enveloped_Reinforcement_Analysis.csv";
 const std::string OUTPUT_DB_FILENAME = "Enveloped_Reinforcement_Analysis.db";
 // --------------------------
 
-// Структура для хранения информации об источнике максимального значения
 struct ResultInfo {
     double value = 0.0;
     std::string source_db;
@@ -26,10 +30,8 @@ struct ResultInfo {
     long long source_setN = 0;
 };
 
-// Основной тип для хранения данных
 using MaxResultsMap = std::unordered_map<long long, std::unordered_map<std::string, ResultInfo>>;
 
-// Вспомогательная функция для вывода ошибок SQLite
 void log_sqlite_error(const std::string& message, sqlite3* db_handle) {
     std::cerr << "  ERROR: " << message << ": " << sqlite3_errmsg(db_handle) << std::endl;
 }
@@ -38,14 +40,13 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
     std::cout << "\nProcessing file: " << db_path.filename().string() << std::endl;
     sqlite3* db_handle;
 
-    // Используем конструктор пути, который корректно работает с UTF-8 на Windows
-    if (sqlite3_open_v2(db_path.string().c_str(), &db_handle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    // ИСПОЛЬЗУЕМ sqlite3_open16 для корректной работы с Unicode-путями в Windows
+    if (sqlite3_open16(db_path.c_str(), &db_handle) != SQLITE_OK) {
         log_sqlite_error("Could not open file", db_handle);
         sqlite3_close(db_handle);
         return;
     }
 
-    // 1. Получаем список таблиц через C API
     sqlite3_stmt* table_stmt;
     const char* table_query = "SELECT name FROM sqlite_master WHERE type='table';";
     if (sqlite3_prepare_v2(db_handle, table_query, -1, &table_stmt, nullptr) != SQLITE_OK) {
@@ -60,7 +61,6 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
     }
     sqlite3_finalize(table_stmt);
 
-    // 2. Обрабатываем каждую таблицу
     for (const auto& table_name : table_names) {
         std::cout << "  - Reading table: '" << table_name << "'" << std::endl;
         
@@ -111,11 +111,9 @@ void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
 void saveResults(const MaxResultsMap& results) {
     std::cout << "\nWriting results..." << std::endl;
     
-    // --- Сохранение в CSV ---
     std::ofstream csv_file(OUTPUT_CSV_FILENAME);
     csv_file << "Element_ID;Reinforcement_Type;Max_Value;Source_DB;Source_Table;Source_SetN\n";
 
-    // --- Сохранение в DB через C API ---
     sqlite3* db_handle;
     if (sqlite3_open(OUTPUT_DB_FILENAME.c_str(), &db_handle) != SQLITE_OK) {
         log_sqlite_error("Could not create output database", db_handle);
@@ -167,28 +165,40 @@ void saveResults(const MaxResultsMap& results) {
 
 int main() {
     #ifdef _WIN32
-        // Эта команда настраивает консоль на работу с UTF-8,
-        // что необходимо для корректного отображения и ввода русских символов в пути.
-        std::system("chcp 65001 > nul");
+        // Настраиваем консоль на корректную работу с Unicode (UTF-16)
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
     #endif
     
     std::cout << "--- Reinforcement Envelope Analyzer (Pure C API) ---" << std::endl;
-
-    std::string input_path_str;
     std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
-    std::getline(std::cin, input_path_str);
-
-    if (input_path_str.empty() || input_path_str == ".") {
-        input_path_str = ".";
-    }
 
     fs::path target_path;
+    
+    #ifdef _WIN32
+        // Используем wcin для чтения Unicode-строки в Windows
+        std::wstring wpath_str;
+        std::getline(std::wcin, wpath_str);
+        if (wpath_str.empty() || wpath_str == L".") {
+            target_path = ".";
+        } else {
+            target_path = wpath_str;
+        }
+    #else
+        // Стандартный метод для других ОС
+        std::string path_str;
+        std::getline(std::cin, path_str);
+        if (path_str.empty() || path_str == ".") {
+            target_path = ".";
+        } else {
+            target_path = path_str;
+        }
+    #endif
+
     try {
-        // std::filesystem::path хорошо работает с UTF-8 строками,
-        // которые мы получаем из консоли после chcp 65001.
-        target_path = input_path_str;
         if (!fs::exists(target_path) || !fs::is_directory(target_path)) {
-            std::cerr << "ERROR: Path does not exist or is not a directory: " << input_path_str << std::endl;
+            // Используем u8string() для корректного вывода пути в консоль
+            std::cerr << "ERROR: Path does not exist or is not a directory: " << target_path.u8string() << std::endl;
             return 1;
         }
     } catch (const std::exception& e) {
