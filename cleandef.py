@@ -1,64 +1,62 @@
 import sys
 
 # --- НАСТРОЙКИ ---
-# Имя исходного .def файла, созданного dumpbin
 INPUT_FILENAME = "sqlite3.def"
-# Имя итогового, "чистого" .def файла
 OUTPUT_FILENAME = "sqlite3.clean.def"
 # -----------------
 
-def clean_def_file():
+def clean_def_file_paranoid():
     """
-    Читает "грязный" .def файл, извлекает имена функций
-    и создает "чистый" .def файл, готовый для утилиты lib.
+    Финальная, "параноидальная" версия.
+    Создает .def файл в максимально простом формате ASCII с Windows-переносами строк.
     """
     print(f"Читаю исходный файл: {INPUT_FILENAME}...")
     
     try:
-        with open(INPUT_FILENAME, 'r') as f:
+        with open(INPUT_FILENAME, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
     except FileNotFoundError:
-        print(f"ОШИБКА: Файл '{INPUT_FILENAME}' не найден. Убедись, что он лежит в этой же папке.")
+        print(f"ОШИБКА: Файл '{INPUT_FILENAME}' не найден.")
         sys.exit(1)
 
     function_names = []
-    parsing_started = False
+    in_exports_section = False
 
     for line in lines:
-        # Ищем начало списка функций
         if "ordinal hint RVA" in line:
-            parsing_started = True
-            continue # Пропускаем саму строку-заголовок
-
-        # Ищем конец списка
-        if "Summary" in line:
+            in_exports_section = True
+            continue
+        
+        if in_exports_section and ("Summary" in line or not line.strip()):
             break
 
-        # Если мы находимся внутри списка и строка не пустая
-        if parsing_started and line.strip():
-            # Разбиваем строку по пробелам и берем последнее слово - это и есть имя функции
+        if in_exports_section:
             parts = line.split()
-            if len(parts) > 0:
+            if len(parts) >= 4:
                 function_name = parts[-1]
-                # Иногда dumpbin добавляет странные символы, отсекаем их
-                if function_name.isidentifier():
-                     function_names.append(function_name)
+                if function_name.startswith("sqlite3_"):
+                    function_names.append(function_name)
 
     if not function_names:
-        print("ОШИБКА: Не удалось найти имена функций в файле. Проверьте содержимое " + INPUT_FILENAME)
+        print("\nОШИБКА: Не удалось найти имена функций в файле!")
         sys.exit(1)
 
     print(f"Найдено функций: {len(function_names)}. Создаю чистый файл: {OUTPUT_FILENAME}...")
 
-    # Записываем результат в новый файл
-    with open(OUTPUT_FILENAME, 'w') as f:
-        f.write("EXPORTS\n")
-        for name in function_names:
-            f.write(name + "\n")
+    # --- САМОЕ ВАЖНОЕ ИЗМЕНЕНИЕ ---
+    # Открываем файл с явным указанием кодировки ASCII и переносов строк для Windows
+    try:
+        with open(OUTPUT_FILENAME, 'w', encoding='ascii', newline='\r\n') as f:
+            f.write("EXPORTS\n")
+            for name in sorted(function_names):
+                f.write(f"{name}\n")
+    except UnicodeEncodeError as e:
+        print(f"\nОШИБКА КОДИРОВКИ: В имени функции найден не-ASCII символ: {e}")
+        print("Это очень странно и не должно происходить с файлом sqlite3.dll.")
+        sys.exit(1)
 
-    print("Готово! Файл успешно очищен.")
+    print("Готово! Файл успешно создан в формате, который точно поймет lib.exe.")
 
 if __name__ == "__main__":
-    clean_def_file()
-
+    clean_def_file_paranoid()
 
