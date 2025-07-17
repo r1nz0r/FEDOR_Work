@@ -2,12 +2,13 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <filesystem> // Для работы с файловой системой (C++17)
-#include <fstream>    // Для записи в файл
+#include <filesystem>
+#include <fstream>
+#include <algorithm> // Для std::sort
 
-// Подключаем удобную обертку для SQLite.
-// Этот файл должен лежать в той же папке.
+// Подключаем и C++ обертку (для простых операций), и базовую библиотеку C
 #include "sqlite_modern_cpp.h"
+#include "sqlite3.h" // Важно: используем базовый API для сложных запросов
 
 namespace fs = std::filesystem;
 
@@ -18,7 +19,6 @@ const std::string OUTPUT_CSV_FILENAME = "Enveloped_Reinforcement_Analysis.csv";
 const std::string OUTPUT_DB_FILENAME = "Enveloped_Reinforcement_Analysis.db";
 // --------------------------
 
-// Структура для хранения информации об источнике максимального значения
 struct ResultInfo {
     double value = 0.0;
     std::string source_db;
@@ -26,73 +26,95 @@ struct ResultInfo {
     long long source_setN = 0;
 };
 
-// Основной тип для хранения данных: { elementId -> { reinfType -> ResultInfo } }
 using MaxResultsMap = std::unordered_map<long long, std::unordered_map<std::string, ResultInfo>>;
 
 void processDatabase(const fs::path& db_path, MaxResultsMap& results) {
     std::cout << "\n🔄 Обрабатывается файл: " << db_path.filename().string() << std::endl;
-    try {
-        sqlite::database db(db_path.string());
+    sqlite3* db_handle; // Используем базовый C-указатель на базу данных
 
-        // 1. Получаем список всех таблиц
-        std::vector<std::string> table_names;
-        db << "SELECT name FROM sqlite_master WHERE type='table';"
-           >> [&](std::string name) {
-               table_names.push_back(name);
-           };
-
-        for (const auto& table_name : table_names) {
-            std::cout << "  - Чтение таблицы: '" << table_name << "'" << std::endl;
-            
-            // 2. Читаем данные из таблицы
-            db << "SELECT * FROM \"" + table_name + "\";"
-               >> [&](sqlite::query_result::row_type row) {
-                   
-                   // Получаем доступ к данным по именам столбцов
-                   try {
-                       long long element_id = row.get<long long>(ELEMENT_ID_COLUMN);
-                       long long set_n = row.get<long long>(SET_N_COLUMN);
-
-                       // Итерируемся по всем столбцам в строке
-                       for(const auto& field : row) {
-                           std::string col_name = field.first;
-                           if (col_name.rfind("As", 0) == 0) { // Проверяем, начинается ли имя столбца с "As"
-                               double current_value = field.second.get<double>();
-
-                               // Проверяем и обновляем максимум
-                               if (results[element_id].find(col_name) == results[element_id].end() || current_value > results[element_id][col_name].value) {
-                                   results[element_id][col_name] = {current_value, db_path.filename().string(), table_name, set_n};
-                               }
-                           }
-                       }
-                   } catch (const std::exception& e) {
-                       // Пропускаем строки, где нет нужных столбцов или типы не совпадают
-                   }
-               };
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "  ❌ Ошибка при обработке файла " << db_path.string() << ": " << e.what() << std::endl;
+    if (sqlite3_open(db_path.string().c_str(), &db_handle) != SQLITE_OK) {
+        std::cerr << "  ❌ Ошибка открытия файла: " << sqlite3_errmsg(db_handle) << std::endl;
+        sqlite3_close(db_handle);
+        return;
     }
+
+    // Получаем список таблиц, используя C++ обертку для простоты
+    std::vector<std::string> table_names;
+    try {
+        sqlite::database db_wrapper(db_path.string());
+        db_wrapper << "SELECT name FROM sqlite_master WHERE type='table';"
+                   >> [&](std::string name) {
+                       table_names.push_back(name);
+                   };
+    } catch (const std::exception& e) {
+        std::cerr << "  ❌ Ошибка получения списка таблиц: " << e.what() << std::endl;
+        sqlite3_close(db_handle);
+        return;
+    }
+
+    for (const auto& table_name : table_names) {
+        std::cout << "  - Чтение таблицы: '" << table_name << "'" << std::endl;
+        
+        std::string query = "SELECT * FROM \"" + table_name + "\";";
+        sqlite3_stmt* stmt; // Указатель на подготовленный запрос
+
+        if (sqlite3_prepare_v2(db_handle, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << "    ❌ Ошибка подготовки запроса: " << sqlite3_errmsg(db_handle) << std::endl;
+            continue;
+        }
+
+        // Определяем индексы нужных столбцов один раз
+        int col_count = sqlite3_column_count(stmt);
+        int elemId_idx = -1, setN_idx = -1;
+        std::vector<std::pair<std::string, int>> reinf_cols;
+
+        for (int i = 0; i < col_count; ++i) {
+            std::string col_name = sqlite3_column_name(stmt, i);
+            if (col_name == ELEMENT_ID_COLUMN) elemId_idx = i;
+            else if (col_name == SET_N_COLUMN) setN_idx = i;
+            else if (col_name.rfind("As", 0) == 0) reinf_cols.push_back({col_name, i});
+        }
+
+        if (elemId_idx == -1 || setN_idx == -1) {
+            std::cout << "    ⚠️ Пропуск: в таблице нет столбцов '" << ELEMENT_ID_COLUMN << "' или '" << SET_N_COLUMN << "'." << std::endl;
+            sqlite3_finalize(stmt);
+            continue;
+        }
+
+        // Проходим по всем строкам результата
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            long long element_id = sqlite3_column_int64(stmt, elemId_idx);
+            long long set_n = sqlite3_column_int64(stmt, setN_idx);
+
+            // Обновляем максимумы
+            for (const auto& reinf_col : reinf_cols) {
+                const std::string& col_name = reinf_col.first;
+                int col_idx = reinf_col.second;
+                double current_value = sqlite3_column_double(stmt, col_idx);
+
+                if (results[element_id].find(col_name) == results[element_id].end() || current_value > results[element_id][col_name].value) {
+                    results[element_id][col_name] = {current_value, db_path.filename().string(), table_name, set_n};
+                }
+            }
+        }
+        sqlite3_finalize(stmt); // Освобождаем ресурсы запроса
+    }
+    sqlite3_close(db_handle); // Закрываем базу данных
 }
 
 void saveResults(const MaxResultsMap& results) {
     std::cout << "\n✍️ Запись результатов..." << std::endl;
     
-    // --- Сохранение в CSV ---
     std::ofstream csv_file(OUTPUT_CSV_FILENAME);
-    // Для корректного отображения кириллицы в Excel на Windows
-    // csv_file.imbue(std::locale("ru_RU.CP1251")); 
     csv_file << "Element_ID;Reinforcement_Type;Max_Value;Source_DB;Source_Table;Source_SetN\n";
 
-    // --- Сохранение в DB ---
-    if (fs::exists(OUTPUT_DB_FILENAME)) {
-        fs::remove(OUTPUT_DB_FILENAME);
-    }
+    // Используем C++ обертку для удобной записи
     sqlite::database db(OUTPUT_DB_FILENAME);
-    db << "CREATE TABLE EnvelopedReinforcement (Element_ID INTEGER, Reinforcement_Type TEXT, Max_Value REAL, Source_DB TEXT, Source_Table TEXT, Source_SetN INTEGER);";
-    auto transaction = db.transaction();
+    db << "CREATE TABLE IF NOT EXISTS EnvelopedReinforcement (Element_ID INTEGER, Reinforcement_Type TEXT, Max_Value REAL, Source_DB TEXT, Source_Table TEXT, Source_SetN INTEGER);";
+    
+    // ИСПРАВЛЕНИЕ: Ручное управление транзакцией
+    db << "BEGIN TRANSACTION;";
 
-    // Сортируем по ID элемента для наглядности (собираем ключи и сортируем)
     std::vector<long long> sorted_keys;
     for(const auto& pair : results) sorted_keys.push_back(pair.first);
     std::sort(sorted_keys.begin(), sorted_keys.end());
@@ -103,28 +125,20 @@ void saveResults(const MaxResultsMap& results) {
             const std::string& reinf_type = pair.first;
             const ResultInfo& info = pair.second;
 
-            // Запись в CSV
-            csv_file << element_id << ";"
-                     << reinf_type << ";"
-                     << info.value << ";"
-                     << info.source_db << ";"
-                     << info.source_table << ";"
-                     << info.source_setN << "\n";
+            csv_file << element_id << ";" << reinf_type << ";" << info.value << ";" << info.source_db << ";" << info.source_table << ";" << info.source_setN << "\n";
             
-            // Запись в DB
             db << "INSERT INTO EnvelopedReinforcement VALUES (?, ?, ?, ?, ?, ?);"
                << element_id << reinf_type << info.value << info.source_db << info.source_table << info.source_setN;
         }
     }
 
-    transaction.commit();
+    db << "COMMIT;"; // Завершаем транзакцию
     csv_file.close();
 
     std::cout << "✅ Результаты успешно сохранены в " << OUTPUT_CSV_FILENAME << " и " << OUTPUT_DB_FILENAME << std::endl;
 }
 
 int main() {
-    // Устанавливаем русскую локаль для корректного вывода в консоль Windows
     #ifdef _WIN32
         std::system("chcp 65001 > nul");
     #endif
@@ -136,7 +150,6 @@ int main() {
 
     for (const auto& entry : fs::directory_iterator(current_path)) {
         if (entry.is_regular_file() && entry.path().extension() == ".db") {
-            // Исключаем наш собственный выходной файл
             if (entry.path().filename().string() != OUTPUT_DB_FILENAME) {
                 processDatabase(entry.path(), all_max_results);
             }
