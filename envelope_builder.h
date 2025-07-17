@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <vector>
 #include <unordered_map>
+#include <set>
 #include "sqlite3.h"
 
 // =================================================================
@@ -33,34 +34,35 @@ private:
         const std::string ELEMENT_ID_COLUMN = "elemId";
         const std::string OUTPUT_DB_FILENAME = "Envelope.db";
         const std::string TEMP_DB_FILENAME = "__temp_envelope.db";
+        const std::string ENVELOPED_TABLE_NAME = "Enveloped Reinforcement"; // Имя с пробелом
     };
 
     // --- Структуры данных ---
     using ElementProperties = std::unordered_map<std::string, std::string>;
     using VerifiedElementsMap = std::unordered_map<long long, ElementProperties>;
     
-    struct ReinforcementResult
-    {
-        double value = 0.0;
-    };
-    using ReinforcementMap = std::unordered_map<long long, std::unordered_map<std::string, ReinforcementResult>>;
+    // Универсальная структура для хранения огибающих значений
+    // { elemId -> { ColumnName -> MaxValue } }
+    using EnvelopedDataMap = std::unordered_map<long long, std::unordered_map<std::string, double>>;
 
     // --- Приватные поля класса ---
     Config config_;
-    VerifiedElementsMap verifiedElements_; // Данные об элементах всегда хранятся в памяти для верификации
-    ReinforcementMap envelopedReinforcement_; // Используется только в режиме In-Memory
+    VerifiedElementsMap verifiedElements_;
+    EnvelopedDataMap envelopedData_; // Используется только в режиме In-Memory
 
     // --- Основные этапы работы ---
     bool CollectAndVerifyElements(const fs::path& targetPath);
     void AssembleFinalDatabase(const fs::path& targetPath);
 
     // --- Режимы огибания ---
-    void EnvelopeReinforcementInMemory(const fs::path& targetPath);
-    void EnvelopeReinforcementOnDisk(const fs::path& targetPath);
-
+    void EnvelopeDataInMemory(const fs::path& targetPath);
+    void EnvelopeDataOnDisk(const fs::path& targetPath);
+    
     // --- Вспомогательные методы ---
     fs::path GetTargetPathFromUser();
     void LogSqliteError(const std::string& message, sqlite3* dbHandle);
     std::vector<std::string> GetTableNames(sqlite3* dbHandle);
+    std::set<std::string> CollectAllEnvelopedColumns();
+    std::set<std::string> CollectAllEnvelopedColumnsFromTempDb(sqlite3* tempDbHandle);
 };
 
