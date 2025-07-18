@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <map>
+#include <string>
 
 /// <summary>
 /// Внутренняя функция для вывода ошибок SQLite в консоль.
@@ -31,6 +32,36 @@ static std::vector<std::string> SplitString(const std::string& s, char delimiter
     }
     return tokens;
 }
+
+/// <summary>
+/// "Угадывает" тип данных SQLite по строковому значению.
+/// </summary>
+static std::string InferDataType(const std::string& value)
+{
+    if (value.empty()) return "TEXT";
+
+    bool hasDecimal = false;
+    bool isNumeric = true;
+    for (size_t i = 0; i < value.length(); ++i) {
+        if (i == 0 && value[i] == '-') continue; // Allow negative sign
+        if (value[i] == '.' || value[i] == ',') { // Allow decimal separators
+            if (hasDecimal) { // More than one decimal point
+                isNumeric = false;
+                break;
+            }
+            hasDecimal = true;
+        } else if (!isdigit(value[i])) {
+            isNumeric = false;
+            break;
+        }
+    }
+
+    if (isNumeric) {
+        return hasDecimal ? "REAL" : "INTEGER";
+    }
+    return "TEXT";
+}
+
 
 std::map<std::string, std::vector<fs::path>> GroupCsvFilesByPrefix(const fs::path& directory)
 {
@@ -87,7 +118,6 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
         std::string createTableSql;
         std::string insertSql;
         
-        // --- ИСПРАВЛЕННАЯ ЛОГИКА ---
         if (tableName == "Elements")
         {
             createTableSql = R"(CREATE TABLE "Elements" ("elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT, "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL, "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL, PRIMARY KEY("elemId"));)";
@@ -100,18 +130,33 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
         }
         else // Блок для всех остальных, обычных таблиц
         {
+            // --- НОВАЯ ЛОГИКА: "Угадываем" типы данных ---
+            std::string firstDataLine;
+            std::vector<std::string> firstDataValues;
+            if (std::getline(csvFile, firstDataLine)) {
+                firstDataValues = SplitString(firstDataLine, ';');
+            }
+
             std::stringstream createSqlStream, insertSqlStream;
             createSqlStream << "CREATE TABLE IF NOT EXISTS \"" << tableName << "\" (";
             insertSqlStream << "INSERT INTO \"" << tableName << "\" VALUES (";
             for (size_t i = 0; i < csvHeaders.size(); ++i)
             {
-                createSqlStream << "\"" << csvHeaders[i] << "\" TEXT" << (i == csvHeaders.size() - 1 ? "" : ", ");
+                std::string colType = "TEXT";
+                if (i < firstDataValues.size()) {
+                    colType = InferDataType(firstDataValues[i]);
+                }
+                createSqlStream << "\"" << csvHeaders[i] << "\" " << colType << (i == csvHeaders.size() - 1 ? "" : ", ");
                 insertSqlStream << "?" << (i == csvHeaders.size() - 1 ? "" : ",");
             }
             createSqlStream << ");";
             insertSqlStream << ");";
             createTableSql = createSqlStream.str();
             insertSql = insertSqlStream.str();
+            
+            // Возвращаем файловый указатель в начало данных
+            csvFile.clear();
+            csvFile.seekg(headerLine.length() + 1); // +1 for newline
         }
         
         sqlite3_exec(dbHandle, createTableSql.c_str(), 0, 0, &errMsg);
