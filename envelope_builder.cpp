@@ -9,7 +9,7 @@ EnvelopeBuilder::EnvelopeBuilder() {}
 
 void EnvelopeBuilder::Run()
 {
-    std::cout << "--- Universal Envelope Builder ---" << std::endl;
+    std::cout << "--- Universal Envelope Builder ---" << std.endl;
     fs::path targetPath = GetTargetPathFromUser();
     if (targetPath.empty()) return;
 
@@ -126,6 +126,7 @@ void EnvelopeBuilder::EnvelopeDataOnDisk(const fs::path& targetPath)
         sqlite3_stmt* upsertStmt;
         sqlite3_prepare_v2(tempDbHandle, upsertSql, -1, &upsertStmt, nullptr);
 
+        // ИСПРАВЛЕНИЕ: Обрабатываем любую таблицу, если это НЕ "Elements"
         for (const auto& tableName : GetTableNames(sourceDbHandle))
         {
             if (tableName == config_.ELEMENTS_TABLE_NAME) continue;
@@ -176,9 +177,11 @@ void EnvelopeBuilder::EnvelopeDataInMemory(const fs::path& targetPath)
         sqlite3* dbHandle;
         if (sqlite3_open_v2(entry.path().string().c_str(), &dbHandle, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) continue;
 
+        // ИСПРАВЛЕНИЕ: Обрабатываем любую таблицу, если это НЕ "Elements"
         for (const auto& tableName : GetTableNames(dbHandle))
         {
             if (tableName == config_.ELEMENTS_TABLE_NAME) continue;
+            
             std::string query = "SELECT * FROM \"" + tableName + "\";";
             sqlite3_stmt* stmt;
             if (sqlite3_prepare_v2(dbHandle, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) continue;
@@ -226,22 +229,9 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath)
     // 1. Создаем и заполняем таблицу Elements с ФИКСИРОВАННОЙ СТРУКТУРОЙ
     const char* createElementsTableSql = R"(
         CREATE TABLE "Elements" (
-            "elemId"	INT,
-            "elemType"	INT,
-            "CGrade"	TEXT,
-            "SLGrade"	TEXT,
-            "STGrade"	TEXT,
-            "CSType"	INT,
-            "b1"	REAL,
-            "h1"	REAL,
-            "a1"	REAL,
-            "a2"	REAL,
-            "t1"	REAL,
-            "t2"	REAL,
-            "reinfStep1"	REAL,
-            "reinfStep2"	REAL,
-            "a3"	REAL,
-            "a4"	REAL,
+            "elemId"	INT, "elemType"	INT, "CGrade"	TEXT, "SLGrade"	TEXT, "STGrade"	TEXT,
+            "CSType"	INT, "b1"	REAL, "h1"	REAL, "a1"	REAL, "a2"	REAL, "t1"	REAL,
+            "t2"	REAL, "reinfStep1"	REAL, "reinfStep2"	REAL, "a3"	REAL, "a4"	REAL,
             PRIMARY KEY("elemId")
         );
     )";
@@ -256,17 +246,15 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath)
     sqlite3_stmt* insertElementStmt;
     sqlite3_prepare_v2(finalDbHandle, insertElementSql, -1, &insertElementStmt, nullptr);
     
-    // Определяем порядок для вставки
     std::vector<std::string> propOrder = {
         "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1",
         "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4"
     };
 
     for (const auto& pair : verifiedElements_) {
-        sqlite3_bind_int64(insertElementStmt, 1, pair.first); // elemId
+        sqlite3_bind_int64(insertElementStmt, 1, pair.first);
         for (size_t i = 0; i < propOrder.size(); ++i) {
             const std::string& propName = propOrder[i];
-            // Если свойство есть, вставляем, если нет - NULL
             if (pair.second.count(propName)) {
                  sqlite3_bind_text(insertElementStmt, i + 2, pair.second.at(propName).c_str(), -1, SQLITE_STATIC);
             } else {
@@ -293,7 +281,7 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath)
     if (allHeadersSet.empty()) {
         std::cout << "No enveloped data found to assemble." << std::endl;
     } else {
-        // 3. ИСПОЛЬЗУЕМ ФИКСИРОВАННЫЙ ПОРЯДОК КОЛОНОК, как в прошлый раз
+        // 3. ИСПОЛЬЗУЕМ ФИКСИРОВАННЫЙ ПОРЯДОК КОЛОНОК
         std::vector<std::string> orderedHeaders = {
             "As1Ti", "As1Tj", "As1Bi", "As1Bj", "As2Ti", "As2Tj", "As2Bi", "As2Bj",
             "Asw1i", "Asw1j", "Asw2i", "Asw2j", "Reinf1", "Reinf2", "Crack1i", "Crack1j",
@@ -401,9 +389,50 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath)
 }
 
 // --- Остальные вспомогательные функции ---
-std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumns() { /* ... */ return {}; }
-std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumnsFromTempDb(sqlite3*) { /* ... */ return {}; }
-fs::path EnvelopeBuilder::GetTargetPathFromUser() { /* ... */ return {}; }
-void EnvelopeBuilder::LogSqliteError(const std::string&, sqlite3*) { /* ... */ }
-std::vector<std::string> EnvelopeBuilder::GetTableNames(sqlite3*) { /* ... */ return {}; }
+std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumns() {
+    std::set<std::string> headers;
+    for (const auto& elemPair : envelopedData_) {
+        for (const auto& reinfPair : elemPair.second) {
+            headers.insert(reinfPair.first);
+        }
+    }
+    return headers;
+}
+std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumnsFromTempDb(sqlite3* tempDbHandle) {
+    std::set<std::string> headers;
+    sqlite3_stmt* stmt;
+    const char* query = "SELECT DISTINCT ColumnName FROM EnvelopedData;";
+    if (sqlite3_prepare_v2(tempDbHandle, query, -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            headers.insert(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        }
+    }
+    sqlite3_finalize(stmt);
+    return headers;
+}
+fs::path EnvelopeBuilder::GetTargetPathFromUser() {
+    std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
+    std::string inputPathStr;
+    std::getline(std::cin, inputPathStr);
+    fs::path targetPath = inputPathStr.empty() || inputPathStr == "." ? "." : inputPathStr;
+    if (!fs::exists(targetPath) || !fs::is_directory(targetPath)) {
+        std::cerr << "ERROR: Path does not exist or is not a directory: " << inputPathStr << std::endl;
+        return {};
+    }
+    return targetPath;
+}
+void EnvelopeBuilder::LogSqliteError(const std::string& message, sqlite3* dbHandle) {
+    std::cerr << "  ERROR: " << message << ": " << sqlite3_errmsg(dbHandle) << std::endl;
+}
+std::vector<std::string> EnvelopeBuilder::GetTableNames(sqlite3* dbHandle) {
+    std::vector<std::string> tableNames;
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(dbHandle, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            tableNames.push_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        }
+    }
+    sqlite3_finalize(stmt);
+    return tableNames;
+}
 
