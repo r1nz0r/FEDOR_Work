@@ -3,6 +3,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <vector>
+#include <map>
 
 /// <summary>
 /// Внутренняя функция для вывода ошибок SQLite в консоль.
@@ -22,6 +24,10 @@ static std::vector<std::string> SplitString(const std::string& s, char delimiter
     std::istringstream tokenStream(s);
     while (std::getline(tokenStream, token, delimiter))
     {
+        // Убираем возможный символ возврата каретки в конце строки
+        if (!token.empty() && token.back() == '\r') {
+            token.pop_back();
+        }
         tokens.push_back(token);
     }
     return tokens;
@@ -72,45 +78,69 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
         std::cout << "  - Processing file: " << csvPath.filename().string() << " -> table: '" << tableName << "'" << std::endl;
 
         std::ifstream csvFile(csvPath);
-        if (!csvFile.is_open())
-        {
-            std::cerr << "    ERROR: Could not open CSV file." << std::endl;
-            continue;
-        }
+        if (!csvFile.is_open()) continue;
 
-        // Читаем заголовок
         std::string headerLine;
-        if (!std::getline(csvFile, headerLine))
-        {
-            std::cerr << "    WARNING: CSV file is empty or unreadable." << std::endl;
-            continue;
-        }
-        std::vector<std::string> headers = SplitString(headerLine, ';');
-
-        // Создаем таблицу
-        std::stringstream createTableSql;
-        createTableSql << "CREATE TABLE IF NOT EXISTS \"" << tableName << "\" (";
-        for (size_t i = 0; i < headers.size(); ++i)
-        {
-            // Для простоты и надежности все столбцы создаем как TEXT
-            createTableSql << "\"" << headers[i] << "\" TEXT" << (i == headers.size() - 1 ? "" : ", ");
-        }
-        createTableSql << ");";
+        if (!std::getline(csvFile, headerLine)) continue;
         
-        sqlite3_exec(dbHandle, createTableSql.str().c_str(), 0, 0, &errMsg);
-        if (errMsg)
-        {
-            LogSqliteError("Failed to create table", dbHandle);
-            sqlite3_free(errMsg);
-            errMsg = nullptr;
+        std::vector<std::string> csvHeaders = SplitString(headerLine, ';');
+        std::map<std::string, int> csvHeaderIndexMap;
+        for(int i = 0; i < csvHeaders.size(); ++i) {
+            csvHeaderIndexMap[csvHeaders[i]] = i;
         }
 
-        // Готовим запрос на вставку
-        std::stringstream insertSql;
-        insertSql << "INSERT INTO \"" << tableName << "\" VALUES (";
-        for (size_t i = 0; i < headers.size(); ++i)
+        // --- НОВАЯ ЛОГИКА ---
+        std::string createTableSql;
+        std::vector<std::string> correctColumnOrder;
+
+        if (tableName == "Elements")
         {
-            insertSql << "?" << (i == headers.size() - 1 ? "" : ",");
+            createTableSql = R"(
+                CREATE TABLE "Elements" (
+                    "elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT,
+                    "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL,
+                    "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL,
+                    PRIMARY KEY("elemId")
+                );
+            )";
+            correctColumnOrder = {
+                "elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1",
+                "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4"
+            };
+        }
+        else if (tableName == "Enveloped Reinforcement")
+        {
+             createTableSql = R"(
+                CREATE TABLE "Enveloped Reinforcement" (
+                    "setN" INT, "elemId" INT, "elemType" INT, "As1Ti" REAL, "As1Tj" REAL,
+                    "As1Bi" REAL, "As1Bj" REAL, "As2Ti" REAL, "As2Tj" REAL, "As2Bi" REAL,
+                    "As2Bj" REAL, "Asw1i" REAL, "Asw1j" REAL, "Asw2i" REAL, "Asw2j" REAL,
+                    "Reinf1" REAL, "Reinf2" REAL, "Crack1i" REAL, "Crack1j" REAL, "Crack2i" REAL,
+                    "Crack2j" REAL, "Sw1i" REAL, "Sw1j" REAL, "Sw2i" REAL, "Sw2j" REAL,
+                    "ls1i" REAL, "ls1j" REAL, "ls2i" REAL, "ls2j" REAL,
+                    CONSTRAINT "fk_elements" FOREIGN KEY("elemId") REFERENCES "Elements"("elemId"),
+	                PRIMARY KEY("elemId")
+                );
+            )";
+            correctColumnOrder = {
+                "setN", "elemId", "elemType", "As1Ti", "As1Tj", "As1Bi", "As1Bj", "As2Ti",
+                "As2Tj", "As2Bi", "As2Bj", "Asw1i", "Asw1j", "Asw2i", "Asw2j", "Reinf1",
+                "Reinf2", "Crack1i", "Crack1j", "Crack2i", "Crack2j", "Sw1i", "Sw1j",
+                "Sw2i", "Sw2j", "ls1i", "ls1j", "ls2i", "ls2j"
+            };
+        }
+        
+        sqlite3_exec(dbHandle, createTableSql.c_str(), 0, 0, &errMsg);
+        if (errMsg) { LogSqliteError("Failed to create table", dbHandle); sqlite3_free(errMsg); errMsg = nullptr; }
+
+        std::stringstream insertSql;
+        insertSql << "INSERT INTO \"" << tableName << "\" (";
+        for(size_t i = 0; i < correctColumnOrder.size(); ++i) {
+            insertSql << "\"" << correctColumnOrder[i] << "\"" << (i == correctColumnOrder.size() - 1 ? "" : ", ");
+        }
+        insertSql << ") VALUES (";
+        for (size_t i = 0; i < correctColumnOrder.size(); ++i) {
+            insertSql << "?" << (i == correctColumnOrder.size() - 1 ? "" : ",");
         }
         insertSql << ");";
 
@@ -121,38 +151,31 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
             continue;
         }
 
-        // Читаем и вставляем данные
         std::string dataLine;
         while (std::getline(csvFile, dataLine))
         {
             if (dataLine.empty()) continue;
             std::vector<std::string> values = SplitString(dataLine, ';');
+            if (values.size() != csvHeaders.size()) continue;
 
-            if (values.size() != headers.size())
+            for (size_t i = 0; i < correctColumnOrder.size(); ++i)
             {
-                std::cerr << "    WARNING: Row has incorrect number of columns. Skipping." << std::endl;
-                continue;
+                const std::string& colName = correctColumnOrder[i];
+                if (csvHeaderIndexMap.count(colName)) {
+                    int csvIndex = csvHeaderIndexMap.at(colName);
+                    sqlite3_bind_text(insertStmt, i + 1, values[csvIndex].c_str(), -1, SQLITE_TRANSIENT);
+                } else {
+                    sqlite3_bind_null(insertStmt, i + 1);
+                }
             }
-
-            for (size_t i = 0; i < values.size(); ++i)
-            {
-                sqlite3_bind_text(insertStmt, i + 1, values[i].c_str(), -1, SQLITE_TRANSIENT);
-            }
-
-            if (sqlite3_step(insertStmt) != SQLITE_DONE)
-            {
-                LogSqliteError("Failed to execute insert step", dbHandle);
-            }
+            if (sqlite3_step(insertStmt) != SQLITE_DONE) LogSqliteError("Failed to execute insert step", dbHandle);
             sqlite3_reset(insertStmt);
         }
         sqlite3_finalize(insertStmt);
     }
 
     sqlite3_exec(dbHandle, "COMMIT;", 0, 0, &errMsg);
-    if (errMsg)
-    {
-        LogSqliteError("Failed to commit transaction", dbHandle);
-        sqlite3_free(errMsg);
-    }
+    if (errMsg) { LogSqliteError("Failed to commit transaction", dbHandle); sqlite3_free(errMsg); }
     sqlite3_close(dbHandle);
 }
+
