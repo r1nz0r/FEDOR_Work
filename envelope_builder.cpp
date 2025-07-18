@@ -1,80 +1,9 @@
-/*
---------------------------------------------------------------------------
-|                                 EnvelopeBuilder.h                                |
---------------------------------------------------------------------------
-*/
-#pragma once
-
-#include <string>
-#include <filesystem>
-#include <vector>
-#include <unordered_map>
-#include <set>
-#include <map>
-
-#include "sqlite3.h"
-
-namespace fs = std::filesystem;
-
-namespace Builder
-{
-    class EnvelopeBuilder
-    {
-    public:
-        EnvelopeBuilder();
-        void Run();
-
-    private:
-        struct Config
-        {
-            const std::string ELEMENTS_TABLE_NAME = "Elements";
-            const std::string ELEMENT_ID_COLUMN = "elemId";
-            const std::string SET_N_COLUMN = "setN";
-            const std::string ELEM_TYPE_COLUMN = "elemType";
-            const std::string OUTPUT_DB_FILENAME = "Envelope.db";
-            // --- НОВОЕ: Имя для второй, "суммирующей" базы данных ---
-            const std::string OUTPUT_DB_SUMMED_FILENAME = "Envelope_Summed.db";
-            const std::string ENVELOPED_TABLE_NAME = "Enveloped Reinforcement";
-        };
-
-        using ElementProperties = std::unordered_map<std::string, std::string>;
-        using VerifiedElementsMap = std::unordered_map<long long, ElementProperties>;
-
-        // Ключ - ID элемента, значение - карта {Имя столбца: максимальное значение}
-        // Сюда же будут сохраняться и "виртуальные" поля для сумм.
-        using EnvelopedDataMap = std::unordered_map<long long, std::unordered_map<std::string, double>>;
-
-        Config config_;
-        VerifiedElementsMap verifiedElements_;
-        EnvelopedDataMap envelopedData_;
-
-        // --- Основные этапы ---
-        bool CollectAndVerifyElements(const fs::path& targetPath);
-        void EnvelopeDataInMemory(const fs::path& targetPath);
-        // --- ИЗМЕНЕНО: Метод теперь принимает флаг, указывающий, какую версию БД создавать ---
-        void AssembleFinalDatabase(const fs::path& targetPath, bool createSummedVersion);
-
-        // --- Вспомогательные методы ---
-        fs::path GetTargetPathFromUser();
-        void LogSqliteError(const std::string& message, sqlite3* dbHandle);
-        std::vector<std::string> GetTableNames(sqlite3* dbHandle);
-        std::set<std::string> CollectAllEnvelopedColumns();
-    };
-}
-
-
-/*
---------------------------------------------------------------------------
-|                               EnvelopeBuilder.cpp                              |
---------------------------------------------------------------------------
-*/
+#include "EnvelopeBuilder.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
 #include <stdexcept>
 #include <sstream>
-
-// #include "EnvelopeBuilder.h" // Предполагается, что заголовок в том же файле
 
 namespace Builder
 {
@@ -88,15 +17,15 @@ namespace Builder
 
         try
         {
-            // Проходы 1 и 2 являются общими для обеих баз данных
+            // Passes 1 and 2 are common for both output databases
             if (!CollectAndVerifyElements(targetPath)) return;
             EnvelopeDataInMemory(targetPath);
 
-            // --- ИЗМЕНЕНО: Сначала создаем оригинальную БД ---
+            // Create the original database with standard enveloping
             std::cout << "\n--- Assembling ORIGINAL database ---" << std::endl;
             AssembleFinalDatabase(targetPath, false);
 
-            // --- ИЗМЕНЕНО: Затем создаем новую, "суммирующую" БД ---
+            // Create the new database with summed reinforcement for shells
             std::cout << "\n--- Assembling SUMMED database (for shells) ---" << std::endl;
             AssembleFinalDatabase(targetPath, true);
 
@@ -140,6 +69,7 @@ namespace Builder
 
             if (elemIdIdx == -1)
             {
+                sqlite3_finalize(stmt);
                 sqlite3_close(dbHandle);
                 continue;
             }
@@ -208,7 +138,6 @@ namespace Builder
                     continue;
                 }
                 
-                // --- ИЗМЕНЕНО: Логика перестроена для обработки всей строки целиком ---
                 while (sqlite3_step(stmt) == SQLITE_ROW)
                 {
                     long long elementId = sqlite3_column_int64(stmt, elemIdIdx);
@@ -216,8 +145,7 @@ namespace Builder
 
                     std::unordered_map<std::string, double> currentRowNumerics;
 
-                    // 1. Сначала применяем стандартное огибание для ВСЕХ числовых столбцов
-                    // и одновременно собираем значения из текущей строки для логики суммирования.
+                    // Step 1: Perform standard enveloping for all numeric columns and collect current row values
                     for (int i = 0; i < colCount; ++i)
                     {
                         const std::string& colName = colNames[i];
@@ -227,9 +155,8 @@ namespace Builder
                         if (colType == SQLITE_INTEGER || colType == SQLITE_FLOAT)
                         {
                             double currentValue = sqlite3_column_double(stmt, i);
-                            currentRowNumerics[colName] = currentValue; // Сохраняем для шага 2
+                            currentRowNumerics[colName] = currentValue;
 
-                            // Стандартное огибание (нахождение максимума)
                             if (envelopedData_[elementId].find(colName) == envelopedData_[elementId].end() || currentValue > envelopedData_[elementId][colName])
                             {
                                 envelopedData_[elementId][colName] = currentValue;
@@ -237,7 +164,7 @@ namespace Builder
                         }
                     }
 
-                    // 2. Затем, если это оболочка, дополнительно вычисляем и огибаем СУММЫ
+                    // Step 2: If it's a shell, additionally calculate and envelop the sums
                     bool isShell = verifiedElements_.at(elementId).count(config_.ELEM_TYPE_COLUMN) &&
                                    verifiedElements_.at(elementId).at(config_.ELEM_TYPE_COLUMN) == "2";
                     
@@ -251,14 +178,12 @@ namespace Builder
                         double sum_i = asw1i + asw2i;
                         double sum_j = asw1j + asw2j;
 
-                        // Огибаем сумму для узла i, сохраняя в "виртуальное" поле
                         const std::string sum_i_key = "__Asw_sum_i";
                         if (envelopedData_[elementId].find(sum_i_key) == envelopedData_[elementId].end() || sum_i > envelopedData_[elementId][sum_i_key])
                         {
                             envelopedData_[elementId][sum_i_key] = sum_i;
                         }
                         
-                        // Огибаем сумму для узла j, сохраняя в "виртуальное" поле
                         const std::string sum_j_key = "__Asw_sum_j";
                         if (envelopedData_[elementId].find(sum_j_key) == envelopedData_[elementId].end() || sum_j > envelopedData_[elementId][sum_j_key])
                         {
@@ -272,12 +197,8 @@ namespace Builder
         }
     }
 
-    
-
-        
-                  void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool createSummedVersion)
+    void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool createSummedVersion)
     {
-        // --- ИЗМЕНЕНО: Выбираем имя файла и выводим сообщение в зависимости от типа создаваемой БД ---
         const std::string dbFilename = createSummedVersion ? config_.OUTPUT_DB_SUMMED_FILENAME : config_.OUTPUT_DB_FILENAME;
         std::cout << "\nPASS 3: Assembling final database '" << dbFilename << "'..." << std::endl;
         
@@ -290,7 +211,7 @@ namespace Builder
         char* errMsg = nullptr;
         sqlite3_exec(finalDbHandle, "BEGIN TRANSACTION;", 0, 0, &errMsg);
 
-        // 1. Создание и заполнение таблицы Elements (без изменений)
+        // Step 1: Create and populate the "Elements" table (unchanged)
         const char* createElementsTableSql = R"(
         CREATE TABLE "Elements" (
             "elemId"	INT, "elemType"	INT, "CGrade"	TEXT, "SLGrade"	TEXT, "STGrade"	TEXT,
@@ -326,7 +247,7 @@ namespace Builder
         }
         sqlite3_finalize(insertElementStmt);
 
-        // 2. Сборка таблицы "Enveloped Reinforcement"
+        // Step 2: Create and populate the "Enveloped Reinforcement" table
         std::set<std::string> allHeadersSet = CollectAllEnvelopedColumns();
         if (allHeadersSet.empty())
         {
@@ -378,7 +299,6 @@ namespace Builder
                 else
                     sqlite3_bind_null(insertStmt, 3);
                 
-                // --- ИЗМЕНЕНО: Главная логика подмены значений для суммирующей версии ---
                 bool isShellForSumming = createSummedVersion &&
                                          verifiedElements_.count(elementId) &&
                                          verifiedElements_.at(elementId).count(config_.ELEM_TYPE_COLUMN) &&
@@ -387,29 +307,19 @@ namespace Builder
                 int colIdx = 4;
                 for (const auto& header : finalHeaders)
                 {
-                    double valueToBind = 0.0;
-                    bool valueWasSet = false;
-
-                    if (isShellForSumming) {
-                        if (header == "Asw1i") {
-                            valueToBind = elementData.count("__Asw_sum_i") ? elementData.at("__Asw_sum_i") : 0.0;
-                            valueWasSet = true;
-                        } else if (header == "Asw2i") {
-                            valueToBind = 0.0; // Зануляем
-                            valueWasSet = true;
-                        } else if (header == "Asw1j") {
-                            valueToBind = elementData.count("__Asw_sum_j") ? elementData.at("__Asw_sum_j") : 0.0;
-                            valueWasSet = true;
-                        } else if (header == "Asw2j") {
-                            valueToBind = 0.0; // Зануляем
-                            valueWasSet = true;
-                        }
-                    }
-
-                    if (valueWasSet) {
-                        sqlite3_bind_double(insertStmt, colIdx, valueToBind);
+                    // Logic for binding values with special handling for shells in the summed version
+                    if (isShellForSumming && header == "Asw1i") {
+                        double value = elementData.count("__Asw_sum_i") ? elementData.at("__Asw_sum_i") : 0.0;
+                        sqlite3_bind_double(insertStmt, colIdx, value);
+                    } else if (isShellForSumming && header == "Asw2i") {
+                        sqlite3_bind_double(insertStmt, colIdx, 0.0); // Zero out
+                    } else if (isShellForSumming && header == "Asw1j") {
+                        double value = elementData.count("__Asw_sum_j") ? elementData.at("__Asw_sum_j") : 0.0;
+                        sqlite3_bind_double(insertStmt, colIdx, value);
+                    } else if (isShellForSumming && header == "Asw2j") {
+                        sqlite3_bind_double(insertStmt, colIdx, 0.0); // Zero out
                     } else {
-                        // Стандартная логика для всех остальных случаев
+                        // Standard logic for all other cases
                         if (elementData.count(header)) {
                             sqlite3_bind_double(insertStmt, colIdx, elementData.at(header));
                         } else {
@@ -441,7 +351,7 @@ namespace Builder
         {
             for (const auto& reinfPair : elemPair.second)
             {
-                // Не добавляем наши "виртуальные" поля в список колонок таблицы
+                // Do not include internal helper fields in the final table columns
                 if (reinfPair.first.rfind("__", 0) != 0) {
                     headers.insert(reinfPair.first);
                 }
@@ -484,3 +394,4 @@ namespace Builder
         return tableNames;
     }
 }
+
