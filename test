@@ -1,41 +1,7 @@
-Твой скрипт:
-CREATE TABLE "Elements" (
-	"elemId"	INTEGER,
-	"h1"	TEXT,
-	"elemType"	TEXT,
-	"STGrade"	TEXT,
-	"SLGrade"	TEXT,
-	"a3"	TEXT,
-	"CGrade"	TEXT,
-	"CSType"	TEXT,
-	"b1"	TEXT,
-	"a1"	TEXT,
-	"a2"	TEXT,
-	"t1"	TEXT,
-	"t2"	TEXT,
-	"reinfStep1"	TEXT,
-	"reinfStep2"	TEXT,
-	"a4"	TEXT,
-	PRIMARY KEY("elemId")
-);
-
-Исходник:
-CREATE TABLE "Elements" (
-	"elemId"	INT,
-	"elemType"	INT,
-	"CGrade"	TEXT,
-	"SLGrade"	TEXT,
-	"STGrade"	TEXT,
-	"CSType"	INT,
-	"b1"	REAL,
-	"h1"	REAL,
-	"a1"	REAL,
-	"a2"	REAL,
-	"t1"	REAL,
-	"t2"	REAL,
-	"reinfStep1"	REAL,
-	"reinfStep2"	REAL,
-	"a3"	REAL,
-	"a4"	REAL,
-	PRIMARY KEY("elemId")
-);
+Последняя правка которую нужно делать - создавай две базы в Enveloper. Одна - как есть сейчас, ничего не меняется. Вторая будет с изменением.
+Смотри. Сейчас у нас в табилце есть 2 поперечки - Asw1 и Asw2 (i, j узлы еще). Мы огибаем их отдельно друг от друга. Получается что Asw1 может быть от отличной комбинации максимум чем в Asw2.
+Получается завышенное значение поперечки, так как результат мы выводим равным Asw1 + Asw2 в программе нашей.
+Твоя задача - если тип элемента (elemType) равен 2, то огибать внутри себя виртуально не отдельно Asw1 и Asw2, а их сумму.
+Создай для себя отдельный столбец, куда будешь записывать сумму, и огибай по этой сумме (Asw1i + Asw2i, Asw1j + Asw2j).
+Далее в итоговй таблице ты не добавляешь её, а делаешь следующее - в Asw1 записываешь результат суммы, а в Asw2 просто ставишь ноль.
+Понятно объяснил?
