@@ -272,7 +272,10 @@ namespace Builder
         }
     }
 
-    void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool createSummedVersion)
+    
+
+        
+                  void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool createSummedVersion)
     {
         // --- ИЗМЕНЕНО: Выбираем имя файла и выводим сообщение в зависимости от типа создаваемой БД ---
         const std::string dbFilename = createSummedVersion ? config_.OUTPUT_DB_SUMMED_FILENAME : config_.OUTPUT_DB_FILENAME;
@@ -428,4 +431,56 @@ namespace Builder
             sqlite3_free(errMsg);
         }
         sqlite3_close(finalDbHandle);
-        std::cout << "OK: Database '" << dbFilename << "' created successfully." << std
+        std::cout << "OK: Database '" << dbFilename << "' created successfully." << std::endl;
+    }
+
+    std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumns()
+    {
+        std::set<std::string> headers;
+        for (const auto& elemPair : envelopedData_)
+        {
+            for (const auto& reinfPair : elemPair.second)
+            {
+                // Не добавляем наши "виртуальные" поля в список колонок таблицы
+                if (reinfPair.first.rfind("__", 0) != 0) {
+                    headers.insert(reinfPair.first);
+                }
+            }
+        }
+        return headers;
+    }
+
+    fs::path EnvelopeBuilder::GetTargetPathFromUser()
+    {
+        std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
+        std::string inputPathStr;
+        std::getline(std::cin, inputPathStr);
+        fs::path targetPath = inputPathStr.empty() || inputPathStr == "." ? fs::current_path() : inputPathStr;
+        if (!fs::exists(targetPath) || !fs::is_directory(targetPath))
+        {
+            std::cerr << "ERROR: Path does not exist or is not a directory: " << targetPath.string() << std::endl;
+            return {};
+        }
+        return targetPath;
+    }
+
+    void EnvelopeBuilder::LogSqliteError(const std::string& message, sqlite3* dbHandle)
+    {
+        std::cerr << "  ERROR: " << message << ": " << sqlite3_errmsg(dbHandle) << std::endl;
+    }
+
+    std::vector<std::string> EnvelopeBuilder::GetTableNames(sqlite3* dbHandle)
+    {
+        std::vector<std::string> tableNames;
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(dbHandle, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            while (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                tableNames.push_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+            }
+        }
+        sqlite3_finalize(stmt);
+        return tableNames;
+    }
+}
