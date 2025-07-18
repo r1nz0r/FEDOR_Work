@@ -1,4 +1,4 @@
-#include "CsvToDbUtils.h"
+#include "DbUtils.h"
 #include "sqlite3.h"
 #include <iostream>
 #include <fstream>
@@ -24,7 +24,6 @@ static std::vector<std::string> SplitString(const std::string& s, char delimiter
     std::istringstream tokenStream(s);
     while (std::getline(tokenStream, token, delimiter))
     {
-        // Убираем возможный символ возврата каретки в конце строки
         if (!token.empty() && token.back() == '\r') {
             token.pop_back();
         }
@@ -84,68 +83,42 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
         if (!std::getline(csvFile, headerLine)) continue;
         
         std::vector<std::string> csvHeaders = SplitString(headerLine, ';');
-        std::map<std::string, int> csvHeaderIndexMap;
-        for(int i = 0; i < csvHeaders.size(); ++i) {
-            csvHeaderIndexMap[csvHeaders[i]] = i;
-        }
-
-        // --- НОВАЯ ЛОГИКА ---
+        
         std::string createTableSql;
-        std::vector<std::string> correctColumnOrder;
-
+        std::string insertSql;
+        
+        // --- ИСПРАВЛЕННАЯ ЛОГИКА ---
         if (tableName == "Elements")
         {
-            createTableSql = R"(
-                CREATE TABLE "Elements" (
-                    "elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT,
-                    "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL,
-                    "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL,
-                    PRIMARY KEY("elemId")
-                );
-            )";
-            correctColumnOrder = {
-                "elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1",
-                "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4"
-            };
+            createTableSql = R"(CREATE TABLE "Elements" ("elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT, "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL, "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL, PRIMARY KEY("elemId"));)";
+            insertSql = R"(INSERT INTO "Elements" ("elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1", "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
         }
         else if (tableName == "Enveloped Reinforcement")
         {
-             createTableSql = R"(
-                CREATE TABLE "Enveloped Reinforcement" (
-                    "setN" INT, "elemId" INT, "elemType" INT, "As1Ti" REAL, "As1Tj" REAL,
-                    "As1Bi" REAL, "As1Bj" REAL, "As2Ti" REAL, "As2Tj" REAL, "As2Bi" REAL,
-                    "As2Bj" REAL, "Asw1i" REAL, "Asw1j" REAL, "Asw2i" REAL, "Asw2j" REAL,
-                    "Reinf1" REAL, "Reinf2" REAL, "Crack1i" REAL, "Crack1j" REAL, "Crack2i" REAL,
-                    "Crack2j" REAL, "Sw1i" REAL, "Sw1j" REAL, "Sw2i" REAL, "Sw2j" REAL,
-                    "ls1i" REAL, "ls1j" REAL, "ls2i" REAL, "ls2j" REAL,
-                    CONSTRAINT "fk_elements" FOREIGN KEY("elemId") REFERENCES "Elements"("elemId"),
-	                PRIMARY KEY("elemId")
-                );
-            )";
-            correctColumnOrder = {
-                "setN", "elemId", "elemType", "As1Ti", "As1Tj", "As1Bi", "As1Bj", "As2Ti",
-                "As2Tj", "As2Bi", "As2Bj", "Asw1i", "Asw1j", "Asw2i", "Asw2j", "Reinf1",
-                "Reinf2", "Crack1i", "Crack1j", "Crack2i", "Crack2j", "Sw1i", "Sw1j",
-                "Sw2i", "Sw2j", "ls1i", "ls1j", "ls2i", "ls2j"
-            };
+            createTableSql = R"(CREATE TABLE "Enveloped Reinforcement" ("setN" INT, "elemId" INT, "elemType" INT, "As1Ti" REAL, "As1Tj" REAL, "As1Bi" REAL, "As1Bj" REAL, "As2Ti" REAL, "As2Tj" REAL, "As2Bi" REAL, "As2Bj" REAL, "Asw1i" REAL, "Asw1j" REAL, "Asw2i" REAL, "Asw2j" REAL, "Reinf1" REAL, "Reinf2" REAL, "Crack1i" REAL, "Crack1j" REAL, "Crack2i" REAL, "Crack2j" REAL, "Sw1i" REAL, "Sw1j" REAL, "Sw2i" REAL, "Sw2j" REAL, "ls1i" REAL, "ls1j" REAL, "ls2i" REAL, "ls2j" REAL, CONSTRAINT "fk_elements" FOREIGN KEY("elemId") REFERENCES "Elements"("elemId"), PRIMARY KEY("elemId"));)";
+            insertSql = R"(INSERT INTO "Enveloped Reinforcement" ("setN", "elemId", "elemType", "As1Ti", "As1Tj", "As1Bi", "As1Bj", "As2Ti", "As2Tj", "As2Bi", "As2Bj", "Asw1i", "Asw1j", "Asw2i", "Asw2j", "Reinf1", "Reinf2", "Crack1i", "Crack1j", "Crack2i", "Crack2j", "Sw1i", "Sw1j", "Sw2i", "Sw2j", "ls1i", "ls1j", "ls2i", "ls2j") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
+        }
+        else // Блок для всех остальных, обычных таблиц
+        {
+            std::stringstream createSqlStream, insertSqlStream;
+            createSqlStream << "CREATE TABLE IF NOT EXISTS \"" << tableName << "\" (";
+            insertSqlStream << "INSERT INTO \"" << tableName << "\" VALUES (";
+            for (size_t i = 0; i < csvHeaders.size(); ++i)
+            {
+                createSqlStream << "\"" << csvHeaders[i] << "\" TEXT" << (i == csvHeaders.size() - 1 ? "" : ", ");
+                insertSqlStream << "?" << (i == csvHeaders.size() - 1 ? "" : ",");
+            }
+            createSqlStream << ");";
+            insertSqlStream << ");";
+            createTableSql = createSqlStream.str();
+            insertSql = insertSqlStream.str();
         }
         
         sqlite3_exec(dbHandle, createTableSql.c_str(), 0, 0, &errMsg);
         if (errMsg) { LogSqliteError("Failed to create table", dbHandle); sqlite3_free(errMsg); errMsg = nullptr; }
 
-        std::stringstream insertSql;
-        insertSql << "INSERT INTO \"" << tableName << "\" (";
-        for(size_t i = 0; i < correctColumnOrder.size(); ++i) {
-            insertSql << "\"" << correctColumnOrder[i] << "\"" << (i == correctColumnOrder.size() - 1 ? "" : ", ");
-        }
-        insertSql << ") VALUES (";
-        for (size_t i = 0; i < correctColumnOrder.size(); ++i) {
-            insertSql << "?" << (i == correctColumnOrder.size() - 1 ? "" : ",");
-        }
-        insertSql << ");";
-
         sqlite3_stmt* insertStmt;
-        if (sqlite3_prepare_v2(dbHandle, insertSql.str().c_str(), -1, &insertStmt, nullptr) != SQLITE_OK)
+        if (sqlite3_prepare_v2(dbHandle, insertSql.c_str(), -1, &insertStmt, nullptr) != SQLITE_OK)
         {
             LogSqliteError("Failed to prepare insert statement", dbHandle);
             continue;
@@ -158,15 +131,9 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
             std::vector<std::string> values = SplitString(dataLine, ';');
             if (values.size() != csvHeaders.size()) continue;
 
-            for (size_t i = 0; i < correctColumnOrder.size(); ++i)
+            for (size_t i = 0; i < values.size(); ++i)
             {
-                const std::string& colName = correctColumnOrder[i];
-                if (csvHeaderIndexMap.count(colName)) {
-                    int csvIndex = csvHeaderIndexMap.at(colName);
-                    sqlite3_bind_text(insertStmt, i + 1, values[csvIndex].c_str(), -1, SQLITE_TRANSIENT);
-                } else {
-                    sqlite3_bind_null(insertStmt, i + 1);
-                }
+                sqlite3_bind_text(insertStmt, i + 1, values[i].c_str(), -1, SQLITE_TRANSIENT);
             }
             if (sqlite3_step(insertStmt) != SQLITE_DONE) LogSqliteError("Failed to execute insert step", dbHandle);
             sqlite3_reset(insertStmt);
