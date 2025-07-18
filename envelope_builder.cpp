@@ -5,7 +5,12 @@
 #include <stdexcept>
 #include <sstream>
 
-EnvelopeBuilder::EnvelopeBuilder() {}
+// --- РЕАЛИЗАЦИЯ МЕТОДОВ КЛАССА ---
+
+EnvelopeBuilder::EnvelopeBuilder()
+{
+    // Конструктор остается пустым, вся инициализация в Run()
+}
 
 void EnvelopeBuilder::Run()
 {
@@ -15,11 +20,20 @@ void EnvelopeBuilder::Run()
 
     try
     {
-        if (!CollectAndVerifyElements(targetPath)) return;
+        // Проход 1: Верификация данных. Этот шаг общий для обоих режимов.
+        if (!CollectAndVerifyElements(targetPath))
+        {
+            std::cerr << "Stopping due to issues in verification pass." << std::endl;
+            return;
+        }
 
 #ifdef MEMORY_OPTIMIZED
-        EnvelopeDataOnDisk(targetPath);
+        // Проход 2 (Режим On-Disk): Огибание с записью на диск
+        // ПРИМЕЧАНИЕ: Логика суммирования для On-Disk сложна, поэтому используем In-Memory.
+        std::cout << "NOTE: On-Disk mode for summing is complex, using In-Memory logic for this operation." << std::endl;
+        EnvelopeDataInMemory(targetPath);
 #else
+        // Проход 2 (Режим In-Memory): Огибание с записью в RAM
         EnvelopeDataInMemory(targetPath);
 #endif
 
@@ -34,6 +48,50 @@ void EnvelopeBuilder::Run()
     {
         std::cerr << "\nCRITICAL ERROR: " << e.what() << std::endl;
     }
+}
+
+fs::path EnvelopeBuilder::GetTargetPathFromUser()
+{
+    std::cout << "Enter path to directory with .db files (or '.' for current directory): ";
+    std::string inputPathStr;
+    std::getline(std::cin, inputPathStr);
+
+    fs::path targetPath;
+    if (inputPathStr.empty() || inputPathStr == ".")
+    {
+        targetPath = ".";
+    }
+    else
+    {
+        targetPath = inputPathStr;
+    }
+
+    if (!fs::exists(targetPath) || !fs::is_directory(targetPath))
+    {
+        std::cerr << "ERROR: Path does not exist or is not a directory: " << inputPathStr << std::endl;
+        return {}; // Возвращаем пустой путь в случае ошибки
+    }
+    return targetPath;
+}
+
+void EnvelopeBuilder::LogSqliteError(const std::string& message, sqlite3* dbHandle)
+{
+    std::cerr << "  ERROR: " << message << ": " << sqlite3_errmsg(dbHandle) << std::endl;
+}
+
+std::vector<std::string> EnvelopeBuilder::GetTableNames(sqlite3* dbHandle)
+{
+    std::vector<std::string> tableNames;
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(dbHandle, "SELECT name FROM sqlite_master WHERE type='table';", -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            tableNames.push_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        }
+    }
+    sqlite3_finalize(stmt);
+    return tableNames;
 }
 
 bool EnvelopeBuilder::CollectAndVerifyElements(const fs::path& targetPath)
@@ -105,12 +163,10 @@ bool EnvelopeBuilder::CollectAndVerifyElements(const fs::path& targetPath)
 #ifdef MEMORY_OPTIMIZED
 void EnvelopeBuilder::EnvelopeDataOnDisk(const fs::path& targetPath)
 {
-    std::cout << "\nPASS 2: Enveloping data (On-Disk mode)..." << std::endl;
-    // ... (Этот режим усложняется, для демонстрации оставим In-Memory, который точно работает)
-    // ... (Реализация On-Disk с суммированием требует более сложной логики с несколькими временными таблицами)
-    // ... (Для простоты и надежности этого примера, мы выполним логику в памяти)
+    // ПРИМЕЧАНИЕ: Реализация On-Disk с суммированием требует более сложной логики с несколькими временными таблицами.
+    // Для простоты и надежности этого примера, мы выполним логику в памяти, так как она уже написана и проверена.
+    std::cout << "\nNOTE: On-Disk mode for summing is complex, using In-Memory logic for this operation." << std::endl;
     EnvelopeDataInMemory(targetPath); 
-    std::cout << "NOTE: On-Disk mode for summing is complex, using In-Memory logic for this operation." << std::endl;
 }
 #else
 void EnvelopeBuilder::EnvelopeDataInMemory(const fs::path& targetPath)
@@ -138,7 +194,6 @@ void EnvelopeBuilder::EnvelopeDataInMemory(const fs::path& targetPath)
                 while (sqlite3_step(stmt) == SQLITE_ROW) {
                     long long elementId = sqlite3_column_int64(stmt, elemIdIdx);
                     
-                    // Проверяем тип элемента
                     bool isBeam = verifiedElements_.count(elementId) && 
                                   verifiedElements_.at(elementId).count(config_.ELEM_TYPE_COLUMN) && 
                                   verifiedElements_.at(elementId).at(config_.ELEM_TYPE_COLUMN) == "2";
@@ -153,7 +208,6 @@ void EnvelopeBuilder::EnvelopeDataInMemory(const fs::path& targetPath)
                         if (colType == SQLITE_INTEGER || colType == SQLITE_FLOAT) {
                             double currentValue = sqlite3_column_double(stmt, i);
                             
-                            // Собираем значения Asw для последующего суммирования
                             if (isBeam) {
                                 if (colName == "Asw1i") asw1i = currentValue;
                                 else if (colName == "Asw2i") asw2i = currentValue;
@@ -161,24 +215,20 @@ void EnvelopeBuilder::EnvelopeDataInMemory(const fs::path& targetPath)
                                 else if (colName == "Asw2j") asw2j = currentValue;
                             }
 
-                            // Обычное огибание для стандартной базы
                             if (envelopedData_[elementId].find(colName) == envelopedData_[elementId].end() || currentValue > envelopedData_[elementId][colName].value) {
                                 envelopedData_[elementId][colName] = { currentValue };
                             }
                         }
                     }
 
-                    // Логика для суммированной базы (только для балок)
                     if (isBeam) {
                         double sum_i = asw1i + asw2i;
                         double sum_j = asw1j + asw2j;
 
-                        // Огибаем сумму для узла i
                         if (envelopedSummedAswData_[elementId].find("Asw1i") == envelopedSummedAswData_[elementId].end() || sum_i > envelopedSummedAswData_[elementId]["Asw1i"].value) {
                             envelopedSummedAswData_[elementId]["Asw1i"] = { sum_i };
                             envelopedSummedAswData_[elementId]["Asw2i"] = { 0.0 };
                         }
-                        // Огибаем сумму для узла j
                         if (envelopedSummedAswData_[elementId].find("Asw1j") == envelopedSummedAswData_[elementId].end() || sum_j > envelopedSummedAswData_[elementId]["Asw1j"].value) {
                             envelopedSummedAswData_[elementId]["Asw1j"] = { sum_j };
                             envelopedSummedAswData_[elementId]["Asw2j"] = { 0.0 };
@@ -210,7 +260,7 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool use
     // 1. Создаем и заполняем таблицу Elements
     const char* createElementsTableSql = R"(CREATE TABLE "Elements" ("elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT, "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL, "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL, PRIMARY KEY("elemId")));";
     sqlite3_exec(finalDbHandle, createElementsTableSql, 0, 0, &errMsg);
-    const char* insertElementSql = R"(INSERT INTO "Elements" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
+    const char* insertElementSql = R"(INSERT INTO "Elements" ("elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1", "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
     sqlite3_stmt* insertElementStmt;
     sqlite3_prepare_v2(finalDbHandle, insertElementSql, -1, &insertElementStmt, nullptr);
     std::vector<std::string> propOrder = {"elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1", "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4"};
@@ -218,8 +268,11 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool use
         sqlite3_bind_int64(insertElementStmt, 1, pair.first);
         for (size_t i = 0; i < propOrder.size(); ++i) {
             const std::string& propName = propOrder[i];
-            if (pair.second.count(propName)) sqlite3_bind_text(insertElementStmt, i + 2, pair.second.at(propName).c_str(), -1, SQLITE_STATIC);
-            else sqlite3_bind_null(insertElementStmt, i + 2);
+            if (pair.second.count(propName)) {
+                 sqlite3_bind_text(insertElementStmt, i + 2, pair.second.at(propName).c_str(), -1, SQLITE_STATIC);
+            } else {
+                 sqlite3_bind_null(insertElementStmt, i + 2);
+            }
         }
         sqlite3_step(insertElementStmt);
         sqlite3_reset(insertElementStmt);
@@ -271,13 +324,11 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool use
                 bool valueFound = false;
 
                 if (useSummedAswLogic && isBeam && (header.rfind("Asw", 0) == 0)) {
-                    // Логика для суммированной базы
-                    if (envelopedSummedAswData_[elementId].count(header)) {
-                        valueToBind = envelopedSummedAswData_[elementId].at(header).value;
+                    if (envelopedSummedAswData_.count(elementId) && envelopedSummedAswData_.at(elementId).count(header)) {
+                        valueToBind = envelopedSummedAswData_.at(elementId).at(header).value;
                         valueFound = true;
                     }
                 } else {
-                    // Стандартная логика
                     if (elemPair.second.count(header)) {
                         valueToBind = elemPair.second.at(header).value;
                         valueFound = true;
@@ -300,13 +351,9 @@ void EnvelopeBuilder::AssembleFinalDatabase(const fs::path& targetPath, bool use
     sqlite3_exec(finalDbHandle, "COMMIT;", 0, 0, &errMsg);
     if(errMsg) { LogSqliteError("Error during final assembly", finalDbHandle); sqlite3_free(errMsg); }
     sqlite3_close(finalDbHandle);
-    std::cout << "OK: Final database created successfully." << std::endl;
+    std::cout << "OK: Final database '" << dbFilename << "' created successfully." << std::endl;
 }
 
-// --- Остальные вспомогательные функции ---
-fs::path EnvelopeBuilder::GetTargetPathFromUser() { /* ... */ return {}; }
-void EnvelopeBuilder::LogSqliteError(const std::string&, sqlite3*) { /* ... */ }
-std::vector<std::string> EnvelopeBuilder::GetTableNames(sqlite3*) { /* ... */ return {}; }
 std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumns(const EnvelopedDataMap& dataMap) { 
     std::set<std::string> headers;
     for (const auto& elemPair : dataMap) {
@@ -314,6 +361,22 @@ std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumns(const Envelope
             headers.insert(reinfPair.first);
         }
     }
+    return headers;
+}
+
+std::set<std::string> EnvelopeBuilder::CollectAllEnvelopedColumnsFromTempDb(sqlite3* tempDbHandle)
+{
+    std::set<std::string> headers;
+    sqlite3_stmt* stmt;
+    const char* query = "SELECT DISTINCT ColumnName FROM EnvelopedData;";
+    if (sqlite3_prepare_v2(tempDbHandle, query, -1, &stmt, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            headers.insert(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        }
+    }
+    sqlite3_finalize(stmt);
     return headers;
 }
 
