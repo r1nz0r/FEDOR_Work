@@ -5,6 +5,8 @@
 #include <vector>
 #include <unordered_map>
 #include <set>
+#include <map>
+
 #include "sqlite3.h"
 
 // =================================================================
@@ -17,9 +19,6 @@
 
 namespace fs = std::filesystem;
 
-/// <summary>
-/// Инкапсулирует логику сборки итоговой огибающей базы данных.
-/// </summary>
 class EnvelopeBuilder
 {
 public:
@@ -27,34 +26,30 @@ public:
     void Run();
 
 private:
-    // --- Конфигурация ---
     struct Config
     {
         const std::string ELEMENTS_TABLE_NAME = "Elements";
         const std::string ELEMENT_ID_COLUMN = "elemId";
+        const std::string SET_N_COLUMN = "setN";
+        const std::string ELEM_TYPE_COLUMN = "elemType";
         const std::string OUTPUT_DB_FILENAME = "Envelope.db";
         const std::string TEMP_DB_FILENAME = "__temp_envelope.db";
-        const std::string ENVELOPED_TABLE_NAME = "Enveloped Reinforcement"; // Имя с пробелом
+        const std::string ENVELOPED_TABLE_NAME = "Enveloped Reinforcement";
     };
 
-    // --- Структуры данных ---
     using ElementProperties = std::unordered_map<std::string, std::string>;
     using VerifiedElementsMap = std::unordered_map<long long, ElementProperties>;
     
-    // Универсальная структура для хранения огибающих значений
     // { elemId -> { ColumnName -> MaxValue } }
     using EnvelopedDataMap = std::unordered_map<long long, std::unordered_map<std::string, double>>;
 
-    // --- Приватные поля класса ---
     Config config_;
     VerifiedElementsMap verifiedElements_;
-    EnvelopedDataMap envelopedData_; // Используется только в режиме In-Memory
+    EnvelopedDataMap envelopedData_;
 
-    // --- Основные этапы работы ---
+    // --- Основные этапы ---
     bool CollectAndVerifyElements(const fs::path& targetPath);
     void AssembleFinalDatabase(const fs::path& targetPath);
-
-    // --- Режимы огибания ---
     void EnvelopeDataInMemory(const fs::path& targetPath);
     void EnvelopeDataOnDisk(const fs::path& targetPath);
     
