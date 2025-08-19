@@ -1,0 +1,101 @@
+Sub CreateFigureListFromSelection()
+    '================================================================================
+    ' Макрос для создания таблицы со списком рисунков на основе выделенного текста.
+    ' Он находит все подписи в выделении, извлекает из них номер и описание,
+    ' и формирует таблицу, аналогичную вашему примеру.
+    '================================================================================
+
+    ' --- НАСТРОЙКА ---
+    ' Укажите точное имя стиля, который вы используете для подписей к рисункам.
+    ' В русской версии Word это обычно "Подпись рисунка".
+    ' В английской версии - "Caption".
+    Const CAPTION_STYLE_NAME As String = "Подпись рисунка"
+    ' -----------------
+
+    Dim sel As Selection
+    Dim para As Paragraph
+    Dim tbl As Table
+    Dim captionsData As Object ' Используем коллекцию для удобства
+    Dim fullCaptionText As String
+    Dim figureLabel As String
+    Dim figureDescription As String
+    Dim separatorPosition As Integer
+
+    ' Инициализация
+    Set sel = Application.Selection
+    Set captionsData = CreateObject("System.Collections.ArrayList")
+
+    ' 1. Проверяем, выделил ли пользователь что-нибудь
+    If sel.Type = wdSelectionIP Or sel.Range.Paragraphs.Count <= 1 Then
+        MsgBox "Пожалуйста, выделите область с рисунками и подписями к ним.", vbInformation, "Ничего не выделено"
+        Exit Sub
+    End If
+
+    ' 2. Ищем все подписи в выделенной области
+    For Each para In sel.Range.Paragraphs
+        ' Проверяем, что стиль абзаца совпадает с заданным стилем подписи
+        If para.Style = CAPTION_STYLE_NAME Then
+            ' Получаем полный текст подписи и очищаем от лишних символов (например, знака абзаца)
+            fullCaptionText = Trim(para.Range.Text)
+
+            ' Ищем разделитель (точка и пробел) между обозначением и описанием.
+            ' Например, в "Рисунок 1. Описание" он найдет ". "
+            separatorPosition = InStr(1, fullCaptionText, ". ", vbTextCompare)
+
+            ' Если разделитель найден, разделяем текст на две части
+            If separatorPosition > 0 Then
+                figureLabel = Left(fullCaptionText, separatorPosition - 1)
+                figureDescription = Trim(Mid(fullCaptionText, separatorPosition + 2))
+            Else
+                ' Если разделитель не найден, считаем весь текст обозначением
+                figureLabel = fullCaptionText
+                figureDescription = "" ' Описание оставляем пустым
+            End If
+            
+            ' Добавляем найденные данные в нашу коллекцию
+            captionsData.Add Array(figureLabel, figureDescription)
+        End If
+    Next para
+
+    ' 3. Проверяем, нашли ли мы хоть одну подпись
+    If captionsData.Count = 0 Then
+        MsgBox "В выделенной области не найдено ни одного абзаца со стилем '" & CAPTION_STYLE_NAME & "'. " & vbCrLf & _
+               "Проверьте, что подписи к рисункам имеют правильный стиль, или измените имя стиля в настройках макроса.", _
+               vbExclamation, "Подписи не найдены"
+        Exit Sub
+    End If
+
+    ' 4. Создаем таблицу в конце выделения
+    sel.Collapse Direction:=wdCollapseEnd ' Перемещаем курсор в конец выделения
+    sel.TypeParagraph ' Вставляем пустой абзац для таблицы
+    
+    ' Добавляем таблицу: +1 строка для заголовка
+    Set tbl = sel.Document.Tables.Add(Range:=sel.Range, NumRows:=captionsData.Count + 1, NumColumns:=2)
+
+    ' 5. Настраиваем и заполняем таблицу
+    With tbl
+        ' Стиль и границы
+        .Style = "Сетка таблицы" ' Применяем стандартный стиль для хорошего вида
+        .Borders.Enable = True
+        
+        ' Заголовки таблицы
+        .Cell(1, 1).Range.Text = "Обозначение"
+        .Cell(1, 2).Range.Text = "Описание рисунка"
+        .Rows(1).Range.Font.Bold = True
+        .Rows(1).Range.ParagraphFormat.Alignment = wdAlignParagraphCenter
+
+        ' Заполняем таблицу данными из коллекции
+        Dim i As Integer
+        For i = 0 To captionsData.Count - 1
+            .Cell(i + 2, 1).Range.Text = captionsData(i)(0)
+            .Cell(i + 2, 2).Range.Text = captionsData(i)(1)
+        Next i
+        
+        ' Автоподбор ширины столбцов по содержимому
+        .AutoFitBehavior (wdAutoFitContent)
+        .Range.Cells.VerticalAlignment = wdCellAlignVerticalCenter
+    End With
+    
+    MsgBox "Готово! Таблица со списком из " & captionsData.Count & " рисунков успешно создана.", vbInformation, "Операция завершена"
+
+End Sub
