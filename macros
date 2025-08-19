@@ -1,15 +1,13 @@
-Sub CreateFigureListFromSelection_V2()
+Sub CreateFigureListFromSelection_V3_Fixed()
     '================================================================================
-    ' УЛУЧШЕННАЯ ВЕРСИЯ МАКРОСА
-    ' Эта версия не зависит от стиля подписи. Она ищет специальное поле {SEQ},
-    ' которое Word автоматически вставляет при использовании функции "Вставить название".
-    ' Это делает макрос гораздо более надежным.
+    ' ИСПРАВЛЕННАЯ ВЕРСИЯ МАКРОСА (V3)
+    ' Заменен внешний объект ArrayList на встроенный VBA.Collection, чтобы избежать
+    ' ошибки "Automation error" или "ActiveX component can't create object"
+    ' на системах с ограничениями. Эта версия должна работать на любом ПК.
     '================================================================================
 
     ' --- НАСТРОЙКА ---
-    ' Укажите ключевое слово-идентификатор для ваших рисунков.
-    ' Это то слово, которое идет после SEQ в коде поля (например, {SEQ Рисунок...}).
-    ' Обычно это "Рисунок", "Рис." или "Figure" в английской версии.
+    ' Укажите ключевое слово-идентификатор для ваших рисунков (напр., "Рисунок", "Рис.").
     Const CAPTION_IDENTIFIER As String = "Рисунок"
     ' -----------------
 
@@ -17,51 +15,38 @@ Sub CreateFigureListFromSelection_V2()
     Dim para As Paragraph
     Dim fld As Field
     Dim tbl As Table
-    Dim captionsData As Object
+    
+    ' ИЗМЕНЕНИЕ №1: Используем встроенную коллекцию VBA
+    Dim captionsData As Collection
+    Set captionsData = New Collection
+    
     Dim fullCaptionText As String
     Dim figureLabel As String
     Dim figureDescription As String
 
-    ' Инициализация
     Set sel = Application.Selection
-    Set captionsData = CreateObject("System.Collections.ArrayList")
 
-    ' 1. Проверяем, выделил ли пользователь что-нибудь
     If sel.Type = wdSelectionIP Or sel.Range.Paragraphs.Count <= 1 Then
         MsgBox "Пожалуйста, выделите область с рисунками и подписями к ним.", vbInformation, "Ничего не выделено"
         Exit Sub
     End If
 
-    ' 2. Ищем абзацы с подписями в выделенной области
     For Each para In sel.Range.Paragraphs
-        ' Проверяем, есть ли в абзаце поля
         If para.Range.Fields.Count > 0 Then
-            ' Перебираем все поля в абзаце
             For Each fld In para.Range.Fields
-                ' Нас интересует только поле типа "Последовательность" (Sequence)
                 If fld.Type = wdFieldSequence Then
-                    ' Проверяем, что это последовательность для рисунков (по идентификатору)
                     If InStr(1, fld.Code.Text, CAPTION_IDENTIFIER, vbTextCompare) > 0 Then
-                        
-                        ' Нашли нужную подпись! Извлекаем данные.
                         fullCaptionText = Trim(para.Range.Text)
-                        
-                        ' "Обозначение" - это результат работы поля (напр., "Рисунок А.1")
                         figureLabel = Trim(fld.Result.Text)
-                        
-                        ' "Описание" - это все, что идет после обозначения
-                        ' Находим позицию, где заканчивается обозначение, и берем остаток строки
                         figureDescription = Trim(Mid(fullCaptionText, Len(figureLabel) + 1))
                         
-                        ' Часто после номера идет точка или двоеточие. Убираем их.
                         If Left(figureDescription, 1) = "." Or Left(figureDescription, 1) = ":" Then
                             figureDescription = Trim(Mid(figureDescription, 2))
                         End If
 
-                        ' Добавляем найденные данные в коллекцию
+                        ' Добавление в коллекцию работает так же
                         captionsData.Add Array(figureLabel, figureDescription)
                         
-                        ' Выходим из цикла полей, т.к. нужную подпись в этом абзаце мы уже нашли
                         Exit For
                     End If
                 End If
@@ -69,19 +54,16 @@ Sub CreateFigureListFromSelection_V2()
         End If
     Next para
 
-    ' 3. Проверяем, нашли ли мы хоть одну подпись
     If captionsData.Count = 0 Then
         MsgBox "В выделенной области не найдено подписей, вставленных через ""Вставить название"" с идентификатором '" & CAPTION_IDENTIFIER & "'.", _
                vbExclamation, "Подписи не найдены"
         Exit Sub
     End If
 
-    ' 4. Создаем таблицу в конце выделения (логика та же)
     sel.Collapse Direction:=wdCollapseEnd
     sel.TypeParagraph
     Set tbl = sel.Document.Tables.Add(Range:=sel.Range, NumRows:=captionsData.Count + 1, NumColumns:=2)
 
-    ' 5. Настраиваем и заполняем таблицу (логика та же)
     With tbl
         .Style = "Сетка таблицы"
         .Borders.Enable = True
@@ -90,10 +72,12 @@ Sub CreateFigureListFromSelection_V2()
         .Rows(1).Range.Font.Bold = True
         .Rows(1).Range.ParagraphFormat.Alignment = wdAlignParagraphCenter
         
-        Dim i As Integer
-        For i = 0 To captionsData.Count - 1
-            .Cell(i + 2, 1).Range.Text = captionsData(i)(0)
-            .Cell(i + 2, 2).Range.Text = captionsData(i)(1)
+        ' ИЗМЕНЕНИЕ №2: Цикл для заполнения таблицы немного изменился
+        Dim i As Long
+        For i = 1 To captionsData.Count
+            ' Коллекции нумеруются с 1, поэтому индекс строки теперь i + 1
+            .Cell(i + 1, 1).Range.Text = captionsData(i)(0) ' Первый элемент массива
+            .Cell(i + 1, 2).Range.Text = captionsData(i)(1) ' Второй элемент массива
         Next i
         
         .AutoFitBehavior (wdAutoFitContent)
