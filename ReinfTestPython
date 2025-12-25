@@ -38,167 +38,99 @@ MOMENT_SCALE = 1000.0   # Если M в Н*м -> 1000.0 (перевод в Н*м
 def solve_general_section(N_ansys, M_ansys, b, h, a, is_sym):
     """
     Универсальный решатель.
-    Возвращает кортеж (As_Face1, As_Face2), где:
-    Face1 - условная "Верхняя/Левая" грань (соответствует отрицательному моменту)
-    Face2 - условная "Нижняя/Правая" грань (соответствует положительному моменту)
-    
-    Логика знаков момента:
-    M > 0 -> Растянут Face2 (Bot/Right), Сжат Face1 (Top/Left)
-    M < 0 -> Растянут Face1 (Top/Left), Сжат Face2 (Bot/Right)
     """
     
     # 1. Приводим к СП 63
     # N_sp: (+) Сжатие, (-) Растяжение
     N_sp = -N_ansys 
-    M_val = M_ansys # Знак важен для определения растянутой грани!
+    M_val = M_ansys 
     
     h0 = h - a
+    
+    # === ФИКС ОШИБКИ: СЧИТАЕМ x_R СРАЗУ, ЧТОБЫ ОН БЫЛ ВИДЕН ВЕЗДЕ ===
+    omega = 0.85 - 0.008 * RB
+    if omega < 0.37: omega = 0.37
+    xi_R = omega / (1 + (RS/ES)/0.0035)
+    x_R = xi_R * h0
+    # ==============================================================
     
     # Отсечка шума
     if abs(N_sp) < 100 and abs(M_val) < 10000:
         return (0.0, 0.0)
 
-    # Определяем, кто Растянут (Tens), кто Сжат (Comp)
-    # По дефолту полагаем M > 0 (Растянут низ/право - Face2)
-    # Если M < 0, мы просто инвертируем результаты в конце
-    
     inverted = False
     if M_val < 0:
         M = -M_val
-        inverted = True # В конце махнем местами As_tens и As_comp
+        inverted = True 
     else:
         M = M_val
         
-    # Теперь работаем как будто M > 0 (Растянута зона 2, Сжата зона 1)
-    # As_tens -> Face2
-    # As_comp -> Face1
-    
     As_tens_res = 0.0
     As_comp_res = 0.0
     
-    # --- СЖАТИЕ (N_sp > 0) ---
+    # --- СЖАТИЕ (N_sp >= 0) ---
     if N_sp >= 0:
-        # Случайный эксцентриситет
         ea = max(h / 30.0, 10.0)
         e0 = M / N_sp if N_sp != 0 else 0
         e0 = max(e0, ea)
         
-        # Эксцентриситет относительно ц.т. растянутой (менее сжатой) арматуры
-        e_s = e0 + (h/2 - a) # eta=1.0
-        
-        # Момент внешних сил относительно растянутой арматуры
+        e_s = e0 + (h/2 - a) 
         M_ext = N_sp * e_s
         
-        # Граничное x_R
-        omega = 0.85 - 0.008 * RB
-        if omega < 0.37: omega = 0.37
-        xi_R = omega / (1 + (RS/ES)/0.0035)
-        x_R = xi_R * h0
-        
-        # --- ПОДБОР (НЕСИММЕТРИЧНЫЙ) ---
-        # 1. Пробуем без сжатой арматуры (As_comp = 0)
-        # Уравнение моментов: N*e_s = Rb*b*x*(h0 - 0.5x)
-        # Rb*b*0.5*x^2 - Rb*b*h0*x + M_ext = 0
-        # A*x^2 + B*x + C = 0
-        
+        # Уравнение: A*x^2 + B*x + C = 0
         A_k = 0.5 * RB * b
         B_k = -RB * b * h0
         C_k = M_ext
         
-        # Дискриминант
         D = B_k**2 - 4 * A_k * C_k
         
-        x_sol = 99999.0
         need_comp_steel = False
+        x_sol = 0.0 # Инициализируем нулем на всякий
         
         if D >= 0:
-            # Два корня, берем меньший (физический смысл)
             x1 = (-B_k - math.sqrt(D)) / (2 * A_k)
-            # x2 = (-B_k + math.sqrt(D)) / (2 * A_k) обычно > h0
             x_sol = x1
             
-            # Проверка x <= xi_R * h0
             if x_sol <= x_R:
-                # Все ок, сжатая арматура не нужна
-                # Находим растянутую из проекции сил:
-                # N = Rb*b*x - Rs*As_tens
-                # As_tens = (Rb*b*x - N) / Rs
                 req_As = (RB * b * x_sol - N_sp) / RS
                 As_tens_res = max(req_As, 0.0)
                 As_comp_res = 0.0
             else:
                 need_comp_steel = True
         else:
-            # Дискриминант < 0, бетон один не тащит момент вообще
             need_comp_steel = True
             
         if need_comp_steel:
-            # Фиксируем x = x_R
             x_eff = x_R
-            
-            # Находим требуемую сжатую арматуру из уравнения моментов
-            # M_ext = Mb_max + Rsc*As'*(h0 - a)
             Mb_max = RB * b * x_eff * (h0 - 0.5 * x_eff)
             
             if M_ext > Mb_max:
                 dM = M_ext - Mb_max
                 As_comp_res = dM / (RSC * (h0 - a))
             else:
-                As_comp_res = 0.0 # Теоретически сюда не должны попасть, если D<0
+                As_comp_res = 0.0 
             
-            # Находим растянутую из суммы сил
-            # N = Rb*b*x + Rsc*As' - Rs*As
-            # As = (Rb*b*x + Rsc*As' - N) / Rs
             req_As = (RB * b * x_eff + RSC * As_comp_res - N_sp) / RS
             As_tens_res = max(req_As, 0.0)
 
     # --- РАСТЯЖЕНИЕ (N_sp < 0) ---
-    else: # N_sp < 0
+    else: 
         Nt = abs(N_sp)
         e0 = M / Nt if Nt != 0 else 0
         
-        # Малый эксцентриситет (сила между арматурами)
+        # Малый эксцентриситет
         if e0 <= (h/2 - a):
-            # Растянуты ОБЕ грани
-            e_prime = e0 + h/2 - a # Расстояние до As_tens
-            z = h - 2*a
-            
-            # Правило рычага
-            # As_tens (ближняя к силе)
-            As_tens_res = Nt * (z - (e_prime - e0)) / (RS * z) # Упрощенно, перепроверим
-            # Точнее: сумма моментов относительно As_comp
-            # Nt * (z - e_prime) / (Rs * z) ... нет.
-            
-            # Относительно центра As_comp: Nt * (e0 + h/2 - a)_от_центра = Nt * e_prime
-            # Нет, e_prime - это расстояние от силы до As_tens.
-            # Расстояние от силы до As_comp = (h/2 - a) - e0 = e_comp
-            
             e_comp_dist = (h/2 - a) - e0
             e_tens_dist = (h/2 - a) + e0
+            z = h - 2*a
             
-            # As_tens * z = Nt * e_comp_dist
             As_tens_res = Nt * e_comp_dist / (RS * z)
-            
-            # As_comp * z = Nt * e_tens_dist
             As_comp_res = Nt * e_tens_dist / (RS * z)
             
         else:
-            # Большой эксцентриситет (сжатая зона есть)
+            # Большой эксцентриситет
             e_prime = e0 + h/2 - a
             M_ext = Nt * e_prime
-            
-            # Считаем как изгиб с моментом M_ext
-            # Ищем x
-            # Nt (тянет) уравновешивается Rb*b*x (жмет) и As_comp (жмет) минус As_tens (тянет)
-            # Тут проще:
-            # As_tens = (M_ext) / (Rs * (h0 - 0.5x)) + Nt/Rs ... нет
-            
-            # Классика для прямоугольника:
-            # x определяется из: Rb*b*x*(h0 - 0.5x) = M_ext (если пренебречь сжатой арматурой)
-            # Если x существует - ок.
-            
-            # Уравнение моментов относительно As_tens:
-            # Nt * e_prime = Rb*b*x*(h0 - 0.5x) + Rsc*As'*(...)
             
             A_k = 0.5 * RB * b
             B_k = -RB * b * h0
@@ -209,15 +141,12 @@ def solve_general_section(N_ansys, M_ansys, b, h, a, is_sym):
             if D >= 0:
                  x1 = (-B_k - math.sqrt(D)) / (2 * A_k)
                  x_sol = x1
+                 
+                 # Вот тут раньше была жопа, если x_R не определен
                  if x_sol <= x_R:
-                     # As' не нужна
                      As_comp_res = 0.0
-                     # As_tens из суммы сил:
-                     # -Nt = Rb*b*x - Rs*As
-                     # As = (Rb*b*x + Nt) / Rs
                      As_tens_res = (RB * b * x_sol + Nt) / RS
                  else:
-                     # x ограничиваем, вводим сжатую арматуру
                      x_eff = x_R
                      Mb_max = RB * b * x_eff * (h0 - 0.5 * x_eff)
                      dM = M_ext - Mb_max
@@ -231,22 +160,15 @@ def solve_general_section(N_ansys, M_ansys, b, h, a, is_sym):
                  As_comp_res = dM / (RSC * (h0 - a))
                  As_tens_res = (RB * b * x_eff + RSC * As_comp_res + Nt) / RS
     
-    # --- ФИНАЛИЗАЦИЯ ---
-    
+    # --- ВЫВОД ---
     if is_sym:
-        # Если симметрия включена - берем максимум и ставим везде
         final_As = max(As_tens_res, As_comp_res)
-        return (final_As / 100.0, final_As / 100.0) # см2
+        return (final_As / 100.0, final_As / 100.0) 
     else:
-        # Если не симметрия
-        # Вспоминаем про знак момента
-        # Если было инвертировано (M < 0), то:
-        # As_tens (которая на Face2) должна пойти на Face1
-        # As_comp (которая на Face1) должна пойти на Face2
         if inverted:
-            return (As_tens_res / 100.0, As_comp_res / 100.0) # (Face1, Face2)
+            return (As_tens_res / 100.0, As_comp_res / 100.0) 
         else:
-            return (As_comp_res / 100.0, As_tens_res / 100.0) # (Face1, Face2)
+            return (As_comp_res / 100.0, As_tens_res / 100.0) 
 
 
 # ==========================================
