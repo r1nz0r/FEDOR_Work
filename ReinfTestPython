@@ -249,40 +249,94 @@ def solve_general_section(N_ansys, M_ansys, b, h, a, is_sym):
             return (As_comp_res / 100.0, As_tens_res / 100.0) # (Face1, Face2)
 
 
+# ==========================================
+# УМНЫЙ MAIN (Вставь это вместо старого main)
+# ==========================================
+
+def detect_format(filename):
+    """Пытается угадать кодировку и разделитель"""
+    encodings = ['utf-8-sig', 'cp1251', 'utf-8']
+    
+    for enc in encodings:
+        try:
+            with open(filename, 'r', encoding=enc) as f:
+                first_line = f.readline()
+                # Если прочиталось и не пусто
+                if not first_line: continue
+                
+                # Считаем разделители
+                semicolons = first_line.count(';')
+                commas = first_line.count(',')
+                
+                delimiter = ';' if semicolons > commas else ','
+                
+                # Пробуем распарсить заголовки
+                headers = first_line.strip().split(delimiter)
+                # Если разбили хотя бы на 3 колонки - похоже на правду
+                if len(headers) > 3:
+                    return enc, delimiter
+        except UnicodeDecodeError:
+            continue
+            
+    return None, None
+
 def main():
-    print(f"--- РАСЧЕТ АРМИРОВАНИЯ ---")
+    print(f"--- РАСЧЕТ АРМИРОВАНИЯ (SMART MODE) ---")
     print(f"Симметричное армирование: {IS_SYMMETRIC}")
-    print(f"Чтение {INPUT_FILENAME}...")
+    
+    # 1. Автодетект формата
+    encoding, delimiter = detect_format(INPUT_FILENAME)
+    
+    if not encoding:
+        print(f"ОШИБКА: Не могу прочитать файл {INPUT_FILENAME}. Проверь кодировку или путь.")
+        sys.exit(1)
+        
+    print(f"Файл: {INPUT_FILENAME} | Кодировка: {encoding} | Разделитель: '{delimiter}'")
     
     try:
-        with open(INPUT_FILENAME, 'r', encoding='utf-8-sig') as f_in, \
+        with open(INPUT_FILENAME, 'r', encoding=encoding) as f_in, \
              open(OUTPUT_FILENAME, 'w', newline='', encoding='utf-8') as f_out:
             
-            reader = csv.reader(f_in)
-            writer = csv.writer(f_out)
+            reader = csv.reader(f_in, delimiter=delimiter)
+            writer = csv.writer(f_out, delimiter=';') # На выходе делаем ; чтобы Excel открыл сразу нормально
             
-            headers = next(reader)
+            # Читаем заголовки
+            try:
+                headers = next(reader)
+            except StopIteration:
+                print("Файл пустой!")
+                sys.exit(1)
+
             clean_headers = [h.strip().lower() for h in headers]
             
-            # Поиск колонок
-            try:
-                c_set = -1; c_el = -1
-                c_ni = -1; c_myi = -1; c_mzi = -1
-                c_nj = -1; c_myj = -1; c_mzj = -1
-                
-                for i, h in enumerate(clean_headers):
-                    if 'set' in h: c_set = i
-                    elif 'elem' in h: c_el = i
-                    elif h == 'ni': c_ni = i
-                    elif h == 'nj': c_nj = i
-                    elif h == 'myi': c_myi = i
-                    elif h == 'myj': c_myj = i
-                    elif h == 'mzi': c_mzi = i
-                    elif h == 'mzj': c_mzj = i
-                
-                if c_ni == -1: raise ValueError("Нет колонок сил!")
-            except:
-                print("Кривые заголовки CSV!")
+            # ОТЛАДКА: Показываем, что нашли
+            print(f"Вижу заголовки ({len(clean_headers)} шт): {clean_headers}")
+            
+            # Поиск колонок (немного смягчим условия поиска)
+            c_set = -1; c_el = -1
+            c_ni = -1; c_myi = -1; c_mzi = -1
+            c_nj = -1; c_myj = -1; c_mzj = -1
+            
+            for i, h in enumerate(clean_headers):
+                if 'set' in h: c_set = i
+                elif 'elem' in h: c_el = i
+                # Ищем точные совпадения или совпадения внутри
+                elif h == 'ni' or 'ni' in h.split(): c_ni = i
+                elif h == 'nj' or 'nj' in h.split(): c_nj = i
+                # Моменты
+                elif 'myi' in h: c_myi = i
+                elif 'myj' in h: c_myj = i
+                elif 'mzi' in h: c_mzi = i
+                elif 'mzj' in h: c_mzj = i
+            
+            # Проверка критических колонок
+            missing = []
+            if c_ni == -1: missing.append("Ni")
+            if c_myi == -1: missing.append("Myi")
+            
+            if missing:
+                print(f"\n!!! ОШИБКА: Не найдены столбцы: {', '.join(missing)} !!!")
+                print("Проверь названия в первой строке CSV файла.")
                 sys.exit(1)
             
             # Заголовки выхода
@@ -291,29 +345,30 @@ def main():
                        'AS_Top_J', 'AS_Bot_J', 'AS_Left_J', 'AS_Right_J',
                        'Comment']
             writer.writerow(out_row)
-            writer.writerow(['-', '-', 'cm2', 'cm2', 'cm2', 'cm2', 'cm2', 'cm2', 'cm2', 'cm2', '-'])
             
             count = 0
+            errors = 0
             for row in reader:
                 if not row: continue
                 try:
-                    setn = row[c_set]
-                    elid = row[c_el]
+                    # Защита от коротких строк
+                    if len(row) < len(headers): continue
+                    
+                    setn = row[c_set] if c_set != -1 else "1"
+                    elid = row[c_el] if c_el != -1 else "0"
                     
                     # Данные I
-                    Ni = float(row[c_ni]) * FORCE_SCALE
-                    Myi = float(row[c_myi]) * MOMENT_SCALE
-                    Mzi = float(row[c_mzi]) * MOMENT_SCALE
+                    Ni = float(row[c_ni].replace(',', '.')) * FORCE_SCALE # Замена запятой на точку для float
+                    Myi = float(row[c_myi].replace(',', '.')) * MOMENT_SCALE
+                    Mzi = float(row[c_mzi].replace(',', '.')) * MOMENT_SCALE
                     
                     # Данные J
-                    Nj = float(row[c_nj]) * FORCE_SCALE
-                    Myj = float(row[c_myj]) * MOMENT_SCALE
-                    Mzj = float(row[c_mzj]) * MOMENT_SCALE
+                    Nj = float(row[c_nj].replace(',', '.')) * FORCE_SCALE
+                    Myj = float(row[c_myj].replace(',', '.')) * MOMENT_SCALE
+                    Mzj = float(row[c_mzj].replace(',', '.')) * MOMENT_SCALE
                     
                     # Расчет I
-                    # My: Face1=Top, Face2=Bot
                     top_i, bot_i = solve_general_section(Ni, Myi, REAL_B_Y, REAL_H_Z, COVER_A, IS_SYMMETRIC)
-                    # Mz: Face1=Left, Face2=Right (Условно, h=B, b=H)
                     left_i, right_i = solve_general_section(Ni, Mzi, REAL_H_Z, REAL_B_Y, COVER_A, IS_SYMMETRIC)
                     
                     # Расчет J
@@ -328,14 +383,16 @@ def main():
                     ])
                     count+=1
                 except Exception as e:
-                    # print(f"Err row: {e}")
+                    errors += 1
                     continue
             
-            print(f"Готово, бля. Обработано строк: {count}")
+            print(f"\nГотово. Обработано строк: {count}")
+            if errors > 0:
+                print(f"Пропущено битых строк: {errors}")
+            print(f"Результат записан в: {OUTPUT_FILENAME}")
 
     except FileNotFoundError:
-        print("Файл forces.csv проебался. Положи его рядом.")
+        print("Файл forces.csv не найден!")
 
 if __name__ == "__main__":
     main()
-
