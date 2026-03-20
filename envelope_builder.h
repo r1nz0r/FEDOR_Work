@@ -25,7 +25,7 @@ namespace Builder
     {
     public:
         EnvelopeBuilder();
-        
+
         /**
          * @brief Runs the main build process.
          */
@@ -40,18 +40,18 @@ namespace Builder
             const std::string SET_N_COLUMN = "setN";
             const std::string ELEM_TYPE_COLUMN = "elemType";
             const std::string OUTPUT_DB_FILENAME = "Envelope.db";
-            const std::string OUTPUT_DB_SUMMED_FILENAME = "Envelope_Summed.db";
+            const std::string OUTPUT_DB_SUMMED_FILENAME = "Envelope_AswCorrect.db";
             const std::string ENVELOPED_TABLE_NAME = "Enveloped Reinforcement";
         };
 
-        // Type aliases for clarity
+        //Typedefs for clarity
         using ElementProperties = std::unordered_map<std::string, std::string>;
         using VerifiedElementsMap = std::unordered_map<long long, ElementProperties>;
         using EnvelopedDataMap = std::unordered_map<long long, std::unordered_map<std::string, double>>;
 
-        Config config_;
-        VerifiedElementsMap verifiedElements_; // Stores properties of unique elements
-        EnvelopedDataMap envelopedData_;       // Stores the enveloped (maximum) values
+        Config m_config;
+        VerifiedElementsMap m_verifiedElements; // Stores properties of unique elements
+        EnvelopedDataMap _envelopedData;       // Stores the enveloped (maximum) values
 
         // --- Main Build Stages ---
 
@@ -105,4 +105,3 @@ namespace Builder
         std::set<std::string> CollectAllEnvelopedColumns();
     };
 }
-
