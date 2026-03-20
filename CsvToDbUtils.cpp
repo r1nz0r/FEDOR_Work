@@ -1,4 +1,4 @@
-#include "DbUtils.h"
+#include "CsvToDbUtils.h"
 #include "sqlite3.h"
 #include <iostream>
 #include <fstream>
@@ -21,15 +21,19 @@ static void LogSqliteError(const std::string& message, sqlite3* dbHandle)
 static std::vector<std::string> SplitString(const std::string& s, char delimiter)
 {
     std::vector<std::string> tokens;
-    std::string token;
     std::istringstream tokenStream(s);
+    std::string token;
+
     while (std::getline(tokenStream, token, delimiter))
     {
-        if (!token.empty() && token.back() == '\r') {
+        if (!token.empty() && token.back() == '\r')
+        {
             token.pop_back();
         }
+
         tokens.push_back(token);
     }
+
     return tokens;
 }
 
@@ -42,21 +46,28 @@ static std::string InferDataType(const std::string& value)
 
     bool hasDecimal = false;
     bool isNumeric = true;
-    for (size_t i = 0; i < value.length(); ++i) {
+    for (size_t i = 0; i < value.length(); ++i)
+    {
         if (i == 0 && value[i] == '-') continue; // Allow negative sign
-        if (value[i] == '.' || value[i] == ',') { // Allow decimal separators
-            if (hasDecimal) { // More than one decimal point
+
+        if (value[i] == '.' || value[i] == ',')
+        { // Allow decimal separators
+            if (hasDecimal)
+            { // More than one decimal point
                 isNumeric = false;
                 break;
             }
             hasDecimal = true;
-        } else if (!isdigit(value[i])) {
+        }
+        else if (!isdigit(value[i]))
+        {
             isNumeric = false;
             break;
         }
     }
 
-    if (isNumeric) {
+    if (isNumeric)
+    {
         return hasDecimal ? "REAL" : "INTEGER";
     }
     return "TEXT";
@@ -89,6 +100,7 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
     std::cout << "\nCreating database: " << dbPath.filename().string() << std::endl;
 
     sqlite3* dbHandle;
+
     if (sqlite3_open(dbPath.string().c_str(), &dbHandle) != SQLITE_OK)
     {
         LogSqliteError("Could not create database file", dbHandle);
@@ -112,53 +124,59 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
 
         std::string headerLine;
         if (!std::getline(csvFile, headerLine)) continue;
-        
+
         std::vector<std::string> csvHeaders = SplitString(headerLine, ';');
-        
+
         std::string createTableSql;
         std::string insertSql;
-        
+
         if (tableName == "Elements")
         {
-            createTableSql = R"(CREATE TABLE "Elements" ("elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT, "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL, "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL, PRIMARY KEY("elemId"));)";
-            insertSql = R"(INSERT INTO "Elements" ("elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1", "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
+            createTableSql = R"(CREATE TABLE "Elements" ("elemId" INT, "elemType" INT, "CGrade" TEXT, "SLGrade" TEXT, "STGrade" TEXT, "CSType" INT, "b1" REAL, "h1" REAL, "a1" REAL, "a2" REAL, "t1" REAL, "t2" REAL, "reinfStep1" REAL, "reinfStep2" REAL, "a3" REAL, "a4" REAL, "sl1" REAL, "sl2" REAL, PRIMARY KEY("elemId"));)";
+            insertSql = R"(INSERT INTO "Elements" ("elemId", "elemType", "CGrade", "SLGrade", "STGrade", "CSType", "b1", "h1", "a1", "a2", "t1", "t2", "reinfStep1", "reinfStep2", "a3", "a4", "sl1", "sl2") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
         }
         else if (tableName == "Enveloped Reinforcement")
         {
             createTableSql = R"(CREATE TABLE "Enveloped Reinforcement" ("setN" INT, "elemId" INT, "elemType" INT, "As1Ti" REAL, "As1Tj" REAL, "As1Bi" REAL, "As1Bj" REAL, "As2Ti" REAL, "As2Tj" REAL, "As2Bi" REAL, "As2Bj" REAL, "Asw1i" REAL, "Asw1j" REAL, "Asw2i" REAL, "Asw2j" REAL, "Reinf1" REAL, "Reinf2" REAL, "Crack1i" REAL, "Crack1j" REAL, "Crack2i" REAL, "Crack2j" REAL, "Sw1i" REAL, "Sw1j" REAL, "Sw2i" REAL, "Sw2j" REAL, "ls1i" REAL, "ls1j" REAL, "ls2i" REAL, "ls2j" REAL, CONSTRAINT "fk_elements" FOREIGN KEY("elemId") REFERENCES "Elements"("elemId"), PRIMARY KEY("elemId"));)";
             insertSql = R"(INSERT INTO "Enveloped Reinforcement" ("setN", "elemId", "elemType", "As1Ti", "As1Tj", "As1Bi", "As1Bj", "As2Ti", "As2Tj", "As2Bi", "As2Bj", "Asw1i", "Asw1j", "Asw2i", "Asw2j", "Reinf1", "Reinf2", "Crack1i", "Crack1j", "Crack2i", "Crack2j", "Sw1i", "Sw1j", "Sw2i", "Sw2j", "ls1i", "ls1j", "ls2i", "ls2j") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);)";
         }
-        else // Блок для всех остальных, обычных таблиц
-        {
-            // --- НОВАЯ ЛОГИКА: "Угадываем" типы данных ---
+        else
+        {            
             std::string firstDataLine;
             std::vector<std::string> firstDataValues;
-            if (std::getline(csvFile, firstDataLine)) {
+
+            if (std::getline(csvFile, firstDataLine))
+            {
                 firstDataValues = SplitString(firstDataLine, ';');
             }
 
             std::stringstream createSqlStream, insertSqlStream;
             createSqlStream << "CREATE TABLE IF NOT EXISTS \"" << tableName << "\" (";
             insertSqlStream << "INSERT INTO \"" << tableName << "\" VALUES (";
+
             for (size_t i = 0; i < csvHeaders.size(); ++i)
             {
                 std::string colType = "TEXT";
-                if (i < firstDataValues.size()) {
+
+                if (i < firstDataValues.size())
+                {
                     colType = InferDataType(firstDataValues[i]);
                 }
+
                 createSqlStream << "\"" << csvHeaders[i] << "\" " << colType << (i == csvHeaders.size() - 1 ? "" : ", ");
                 insertSqlStream << "?" << (i == csvHeaders.size() - 1 ? "" : ",");
             }
+
             createSqlStream << ");";
             insertSqlStream << ");";
             createTableSql = createSqlStream.str();
             insertSql = insertSqlStream.str();
-            
+
             // Возвращаем файловый указатель в начало данных
             csvFile.clear();
             csvFile.seekg(headerLine.length() + 1); // +1 for newline
         }
-        
+
         sqlite3_exec(dbHandle, createTableSql.c_str(), 0, 0, &errMsg);
         if (errMsg) { LogSqliteError("Failed to create table", dbHandle); sqlite3_free(errMsg); errMsg = nullptr; }
 
@@ -174,20 +192,33 @@ void CreateDatabaseFromGroup(const fs::path& targetDir, const std::string& dbNam
         {
             if (dataLine.empty()) continue;
             std::vector<std::string> values = SplitString(dataLine, ';');
-            if (values.size() != csvHeaders.size()) continue;
+
+            if (values.size() != csvHeaders.size())
+            {
+                std::cout << "Element id: " << values[1] << " is missing table data.\n";
+                std::cout << "Expected " << csvHeaders.size() << " columns but get only " << values.size() << "\n";
+                continue;
+            }
 
             for (size_t i = 0; i < values.size(); ++i)
-            {
+            { 
                 sqlite3_bind_text(insertStmt, i + 1, values[i].c_str(), -1, SQLITE_TRANSIENT);
             }
-            if (sqlite3_step(insertStmt) != SQLITE_DONE) LogSqliteError("Failed to execute insert step", dbHandle);
+
+            if (sqlite3_step(insertStmt) != SQLITE_DONE) LogSqliteError("Failed to execute insert step for elemId: " + values[0], dbHandle);
+
             sqlite3_reset(insertStmt);
         }
+
         sqlite3_finalize(insertStmt);
     }
 
     sqlite3_exec(dbHandle, "COMMIT;", 0, 0, &errMsg);
-    if (errMsg) { LogSqliteError("Failed to commit transaction", dbHandle); sqlite3_free(errMsg); }
+
+    if (errMsg)
+    { 
+        LogSqliteError("Failed to commit transaction", dbHandle); sqlite3_free(errMsg); 
+    }
+
     sqlite3_close(dbHandle);
 }
-
